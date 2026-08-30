@@ -2,6 +2,7 @@ import type { Transport, TransportConfig, TransportFactory } from './types.ts';
 import { TRANSPORT_NAMES, type TransportName } from './names.ts';
 import { createNullTransport } from './null.ts';
 import { createOtlpGrpcTransport } from './otlp-grpc.ts';
+import { createOtlpHttpTransport } from './otlp-http.ts';
 
 export { TRANSPORT_NAMES, type TransportName };
 
@@ -14,6 +15,7 @@ export { TRANSPORT_NAMES, type TransportName };
 const FACTORIES: Partial<Record<TransportName, TransportFactory>> = {
   null: createNullTransport,
   'otlp-grpc': createOtlpGrpcTransport,
+  'otlp-http': createOtlpHttpTransport,
 };
 
 export function createTransport(name: string, cfg: TransportConfig): Transport {
