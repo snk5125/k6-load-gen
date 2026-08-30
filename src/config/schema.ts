@@ -1,16 +1,12 @@
 import type { PayloadSpec } from '../payload/types.ts';
 import type { Anchor } from '../scenarios/resolve.ts';
 import { SHAPE_NAMES, type ShapeName } from '../scenarios/shapes.ts';
+import { TRANSPORT_NAMES, type TransportName } from '../transports/names.ts';
 
-export type TransportName = 'otlp-grpc' | 'otlp-http' | 'hec' | 'syslog' | 'null';
-
-export const TRANSPORT_NAMES: TransportName[] = [
-  'otlp-grpc',
-  'otlp-http',
-  'hec',
-  'syslog',
-  'null',
-];
+// Re-exported (not just imported) because other modules and tests still
+// import TransportName/TRANSPORT_NAMES from schema.ts — src/transports/names.ts
+// is the single source, schema.ts just forwards it for backward compatibility.
+export { TRANSPORT_NAMES, type TransportName };
 
 export interface TargetSpec {
   transport: TransportName;
