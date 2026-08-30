@@ -1,6 +1,7 @@
 import http from 'k6/http';
 import type { SendResult, TransportFactory } from './types.ts';
 import type { LogEvent } from '../payload/types.ts';
+import { buildHecParams } from './hec-params.ts';
 
 export const createHecTransport: TransportFactory = (cfg) => {
   const endpoint = cfg.endpoint;
@@ -53,17 +54,10 @@ export const createHecTransport: TransportFactory = (cfg) => {
         // itself; setting it manually here would be redundant and would read
         // as load-bearing to a future maintainer.
         //
-        // The key must be OMITTED, not set to `undefined`, when gzip is off.
-        // `{ compression: undefined }` reads as "no compression" in idiomatic
-        // JS, but k6's HTTP client does not treat an explicitly-undefined
-        // value the same as an absent key: it took the key's mere presence
-        // as "compression requested" and rejected every request with
-        // `unknown compression algorithm undefined` — a 100% send-failure
-        // rate for the shipped hec profile, whose default is `gzip: false`.
-        // Caught only by running this transport against a real listener
-        // (Task 9); nothing in the unit suite calls k6/http.
-        const params: { headers: Record<string, string>; compression?: 'gzip' } = { headers };
-        if (gzip) params.compression = 'gzip';
+        // buildHecParams (hec-params.ts) is what makes sure the `compression`
+        // key is omitted, not merely undefined, when gzip is off — see that
+        // module for why the distinction matters.
+        const params = buildHecParams(headers, gzip);
         const res = http.post(url, body, params);
         if (res.status >= 200 && res.status < 300) {
           // With gzip on, `body.length` is the UNCOMPRESSED size — k6 compresses
