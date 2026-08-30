@@ -49,7 +49,9 @@ export const createHecTransport: TransportFactory = (cfg) => {
           Authorization: `Splunk ${token}`,
           'Content-Type': 'application/json',
         };
-        if (gzip) headers['Content-Encoding'] = 'gzip';
+        // k6's `compression` option sets Content-Encoding (and Content-Length)
+        // itself; setting it manually here would be redundant and would read
+        // as load-bearing to a future maintainer.
         const res = http.post(url, body, { headers, compression: gzip ? 'gzip' : undefined });
         if (res.status >= 200 && res.status < 300) {
           // With gzip on, `body.length` is the UNCOMPRESSED size — k6 compresses
