@@ -4,6 +4,7 @@ import { createNullTransport } from './null.ts';
 import { createOtlpGrpcTransport } from './otlp-grpc.ts';
 import { createOtlpHttpTransport } from './otlp-http.ts';
 import { createHecTransport } from './hec.ts';
+import { createSyslogTransport } from './syslog.ts';
 
 export { TRANSPORT_NAMES, type TransportName };
 
@@ -18,6 +19,7 @@ const FACTORIES: Partial<Record<TransportName, TransportFactory>> = {
   'otlp-grpc': createOtlpGrpcTransport,
   'otlp-http': createOtlpHttpTransport,
   hec: createHecTransport,
+  syslog: createSyslogTransport,
 };
 
 export function createTransport(name: string, cfg: TransportConfig): Transport {
