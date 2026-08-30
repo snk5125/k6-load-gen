@@ -54,8 +54,9 @@ function oneLine(s: string): string {
 // boundaries — a space in it makes HOSTNAME/APP-NAME/PROCID/MSGID parse one
 // position out of phase, and an empty string leaves an invalid empty field
 // where the grammar requires NILVALUE. Disallowed characters are replaced
-// (not stripped) so the token's presence is still visible; empty input, or
-// input that sanitizes to nothing, falls back to NILVALUE.
+// (not stripped) so the token's presence is still visible — this is a
+// one-for-one, length-preserving substitution, so the only way the result
+// is empty is if the input already was; that case falls back to NILVALUE.
 function sanitizeAppName(name: string): string {
   const cleaned = name.replace(/[^\x21-\x7E]/g, '_');
   return cleaned.length > 0 ? cleaned : '-';

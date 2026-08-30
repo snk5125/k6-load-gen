@@ -1,6 +1,29 @@
 import { Socket } from 'k6/x/tcp';
+import type { TCPError } from 'k6/x/tcp';
 import type { SendResult, TransportFactory } from './types.ts';
 import { formatRfc5424, formatRfc3164, frame } from './syslog-format.ts';
+
+function isTcpError(err: unknown): err is TCPError {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    typeof (err as TCPError).name === 'string' &&
+    typeof (err as TCPError).method === 'string' &&
+    typeof (err as TCPError).message === 'string'
+  );
+}
+
+// Both the 'error' event and a rejected connect() carry a TCPError
+// ({name, method, message} — src/k6-x-tcp.d.ts), not a JS Error. `String()`
+// on a plain object renders the useless literal "[object Object]" — and
+// this is the error text a user actually sees for the most common syslog
+// failure mode (refused/timed-out connect, TLS failure). Falls back to
+// String(err) for anything that isn't TCPError-shaped (e.g. a write()
+// rejection, which xk6-tcp rejects with a raw Go error, or a payload-build
+// throw like RangeError/URIError).
+function formatSocketError(err: unknown): string {
+  return isTcpError(err) ? `${err.name} during ${err.method}: ${err.message}` : String(err);
+}
 
 // PER-BATCH connect/write/destroy — deliberately NOT a persistent
 // per-VU socket. This was a design change made after a code review found
@@ -36,6 +59,18 @@ import { formatRfc5424, formatRfc3164, frame } from './syslog-format.ts';
 // is bounded by handshake latency, not by the aggregator's ingest rate.
 // A load test using this transport is, in part, measuring TCP/TLS
 // handshake cost, not just the syslog receiver's processing throughput.
+//
+// There is a second, harder ceiling beyond latency: connect-per-batch also
+// caps the achievable RATE. Every closed connection sits in TIME_WAIT on
+// the generator host for roughly 60 seconds, so a single generator VU pool
+// against a single target host:port tops out somewhere around a few
+// hundred connections per second, no matter how fast the handshakes
+// themselves complete — ephemeral source ports simply run out faster than
+// TIME_WAIT clears them. Past that ceiling, connect() itself starts
+// failing (surfaced here as status: 'connect-failed'), which looks exactly
+// like a receiver-side problem in the run's metrics. Anyone tuning VUs
+// upward against this transport should watch for that failure mode before
+// concluding the aggregator is the bottleneck.
 export const createSyslogTransport: TransportFactory = (cfg) => {
   const endpoint = cfg.endpoint;
   if (!endpoint) throw new Error('syslog transport requires target.endpoint (host:port)');
@@ -83,13 +118,13 @@ export const createSyslogTransport: TransportFactory = (cfg) => {
           // reset connection while idle. It is not implied by a write()
           // rejection, nor does it imply one; both paths are handled
           // below.
-          socketError = `${err.name} during ${err.method}: ${err.message}`;
+          socketError = formatSocketError(err);
         });
 
         try {
           await s.connect({ port, host, tls });
         } catch (err) {
-          return { ok: false, status: 'connect-failed', wire_bytes: null, error: String(err) };
+          return { ok: false, status: 'connect-failed', wire_bytes: null, error: formatSocketError(err) };
         }
 
         await s.write(payload);
@@ -103,7 +138,11 @@ export const createSyslogTransport: TransportFactory = (cfg) => {
       } catch (err) {
         // write() rejecting, or the payload-build throw noted above — both
         // land here, separate from the 'error'-event path handled above.
-        return { ok: false, status: 'exception', wire_bytes: null, error: String(err) };
+        // formatSocketError falls back to String(err) for these (neither
+        // is TCPError-shaped per the source reading above) — reused here
+        // too so nothing on this path regresses to "[object Object]" if a
+        // future xk6-tcp version ever rejects write() with a TCPError.
+        return { ok: false, status: 'exception', wire_bytes: null, error: formatSocketError(err) };
       } finally {
         // MUST run on every path, including the two early returns above:
         // a Socket left undestroyed hangs the whole k6 process (see the
