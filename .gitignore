@@ -28,3 +28,6 @@ credentials*
 
 # Local editor/agent config
 .claude/
+
+# Local worktrees for plan execution (scratch, never part of the image)
+.worktrees/
