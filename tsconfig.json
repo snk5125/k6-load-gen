@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["@types/k6"]
+  },
+  // Only files k6 can actually execute belong in this program. `types` is
+  // restricted to @types/k6 on purpose: a k6-executed file must NOT be able
+  // to reference `process`/`Buffer`/etc. and typecheck clean, because k6
+  // provides none of that at runtime (see tsconfig.node.json for the two
+  // Node CLI entrypoints, which DO need Node's globals).
+  //
+  // *.test.ts is excluded wholesale, not just the two test files that touch
+  // the Node CLIs: vitest declares @types/node as a peerDependency, and the
+  // moment ANY file importing 'vitest' is part of this compilation, that
+  // pulls @types/node's global augmentations (process, Buffer, ...) into
+  // the WHOLE program — `types: ["@types/k6"]` does not stop it, because
+  // that restriction only limits *automatic* @types inclusion, not types
+  // resolved by following an explicit peerDependency from an already-
+  // imported package. Verified: with @types/node installed, a bare
+  // `process.env.FOO` reference in a k6-executed file typechecked clean
+  // under this config as long as any *.test.ts (importing vitest) was also
+  // part of the program — restoring exactly the silent-wrongness this split
+  // exists to prevent. tests/k6/probe-transport-init.ts is deliberately NOT
+  // excluded: it has no .test.ts suffix because it's a real k6-executed
+  // probe script (`k6 run tests/k6/probe-transport-init.ts`), not a vitest
+  // suite, so it belongs under k6-only types same as src/main.ts.
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["src/timeline/cli.ts", "src/storage/index-cli.ts", "tests/**/*.test.ts"]
+}

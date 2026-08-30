@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+._*
+
+# Node / dev tooling (vitest, tsc — never shipped in the image)
+node_modules/
+*.tsbuildinfo
+
+# Bundled CLI output — built inside the image (stage 2), never committed
+dist/
+
+# Run artifacts — results live in S3 or a mounted path, not the repo
+results/
+summary.json
+summary-*.json
+timeline*.jsonl
+raw*.json*
+*.log
+
+# Secrets / env — never commit credentials or live endpoints
+.env
+*.pem
+*.key
+credentials*
+
+# Subagent-driven development workspace (ledger, briefs, review packages)
+.superpowers/
+
+# Local editor/agent config
+.claude/

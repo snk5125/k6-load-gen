@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    // Both type packages, not just "node": several *.test.ts files import
+    // src files (e.g. src/config/env.ts, via __ENV) that are only valid
+    // under k6's globals, transitively pulling those files into THIS
+    // program. This config carries no safety obligation the other way —
+    // it's fine for a test file to also see __ENV/console/open — only
+    // tsconfig.json (the one k6 actually executes files under) must stay
+    // restricted to @types/k6 alone.
+    "types": ["node", "@types/k6"]
+  },
+  // Everything k6 never executes: the two Node CLI entrypoints (invoked as
+  // `node dist/*.js` by bin/run.sh, never imported by src/main.ts) and the
+  // whole vitest suite (which needs Node's globals anyway — vitest itself
+  // pulls in @types/node via a peerDependency, see the comment in
+  // tsconfig.json for why that made splitting the *.test.ts files
+  // necessary rather than optional).
+  "include": ["src/timeline/cli.ts", "src/storage/index-cli.ts", "tests/**/*.test.ts"]
+}

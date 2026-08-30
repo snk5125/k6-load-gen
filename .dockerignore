@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+.superpowers
+docs
+tests
+.claude
+*.log
+summary.json

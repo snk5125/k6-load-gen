@@ -1,0 +1,211 @@
+import exec from 'k6/execution';
+
+import { profileName, readOverrides } from './config/env.ts';
+import { validateProfile, type Profile } from './config/schema.ts';
+import { resolveRun } from './config/resolve.ts';
+import { redactProfile } from './config/redact.ts';
+import { SHAPES } from './scenarios/shapes.ts';
+import { resolveScenario } from './scenarios/resolve.ts';
+import { buildThresholds } from './metrics/thresholds.ts';
+import { buildGenerator } from './payload/generator.ts';
+import { createTransport } from './transports/registry.ts';
+import { buildSummary } from './summary/build.ts';
+import { renderSummary } from './summary/render.ts';
+import {
+  eventsAttempted,
+  eventsSent,
+  sendDuration,
+  sendErrors,
+  sendFailures,
+  wireBytes,
+} from './metrics/registry.ts';
+
+// ---------------------------------------------------------------- init context
+
+const PROFILE_NAME = profileName();
+const PROFILE_PATH = `../profiles/${PROFILE_NAME}.json`;
+
+// open() is deliberately outside the try: a missing file must keep k6's own
+// "file not found" error, not be relabelled as a JSON syntax error.
+const PROFILE_TEXT = open(PROFILE_PATH);
+
+let raw: unknown;
+try {
+  raw = JSON.parse(PROFILE_TEXT);
+} catch (e) {
+  // A native SyntaxError names no file, and a hand-edited profile is the most
+  // likely thing to be malformed. Say which file, and keep the parser's message.
+  throw new Error(
+    `profile "${PROFILE_NAME}" (${PROFILE_PATH}) is not valid JSON: ` +
+      `${e instanceof Error ? e.message : String(e)}`,
+  );
+}
+
+const validation = validateProfile(raw);
+if (!validation.ok) {
+  throw new Error(
+    `profile "${PROFILE_NAME}" is invalid:\n  - ${validation.errors.join('\n  - ')}`,
+  );
+}
+
+const run = resolveRun(raw as Profile, readOverrides());
+const shape = SHAPES[run.profile.scenario];
+
+const scenario = resolveScenario({
+  shape,
+  anchor: run.profile.anchor,
+  batch_size: run.profile.payload.batch_size,
+  gen_count: run.gen_count,
+  duration_scale: run.duration_scale,
+});
+
+for (const w of scenario.warnings) console.warn(`CONFIG WARNING: ${w}`);
+
+export const options = {
+  scenarios: { [run.profile.scenario]: scenario.k6 },
+  thresholds: buildThresholds({
+    profile_thresholds: run.profile.thresholds,
+    abort_on_fail: scenario.abort_on_fail,
+  }),
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
+};
+
+const generator = buildGenerator(run.profile.payload, {
+  run_id: run.run_id,
+  gen_index: run.gen_index,
+});
+
+const transport = createTransport(run.profile.target.transport, {
+  endpoint: run.profile.target.endpoint,
+  options: run.profile.target.options,
+});
+
+const PAYLOAD_SAMPLE = generator.expectedAt(0);
+
+// Bounded error logging: an unbounded console.warn against a failing target
+// floods the log tier and slows the generator enough to corrupt the run.
+//
+// errorCount is module-scope init-context state, and k6 gives each VU its
+// own copy of that state — so this bound is PER-VU, not per-run. At the
+// default preAllocatedVUs: 200, a total outage produces roughly 2,000
+// initial log lines (200 VUs x LOG_FIRST), not 10. This is accepted (still
+// four orders of magnitude below unbounded), but do not read LOG_FIRST as a
+// run-wide cap.
+//
+// It must also NEVER be read from handleSummary: k6 evaluates handleSummary in
+// a fresh runtime that re-runs this module top to bottom, so errorCount is 0
+// there regardless of how many sends failed. The run-wide total comes from the
+// send_errors metric instead — metrics cross the runtime boundary, module state
+// does not.
+const LOG_FIRST = 10;
+const LOG_EVERY = 1000;
+let errorCount = 0;
+let connected = false;
+
+// ------------------------------------------------------------------ VU context
+
+export default function (): void {
+  if (!connected) {
+    transport.connect();
+    connected = true;
+  }
+
+  const iteration = exec.scenario.iterationInTest;
+  const batch = generator.batchAt(iteration, Date.now());
+
+  const started = Date.now();
+  const res = transport.send(batch, {
+    run_id: run.run_id,
+    gen_index: run.gen_index,
+    iteration,
+  });
+  sendDuration.add(Date.now() - started);
+
+  eventsAttempted.add(batch.length);
+  sendFailures.add(!res.ok);
+
+  if (res.ok) {
+    eventsSent.add(batch.length);
+    if (res.wire_bytes !== null) wireBytes.add(res.wire_bytes);
+    return;
+  }
+
+  connected = false; // force a reconnect on the next iteration
+  sendErrors.add(1);
+  errorCount++;
+  if (errorCount <= LOG_FIRST || errorCount % LOG_EVERY === 0) {
+    console.warn(
+      `send failed #${errorCount} seq=${batch.length > 0 ? batch[0].seq : -1} ` +
+        `status=${String(res.status)} error=${res.error ?? ''}`,
+    );
+  }
+}
+
+// -------------------------------------------------------------------- teardown
+
+interface K6SummaryData {
+  metrics: Record<string, unknown>;
+  /** k6 fills this in; `testRunDurationMs` is the wall-clock length of the run. */
+  state?: { testRunDurationMs?: number };
+}
+
+export function handleSummary(data: K6SummaryData) {
+  const summaryWarnings: string[] = [];
+
+  // handleSummary runs in a FRESH runtime: every module-scope constant in this
+  // file is re-evaluated here, so a `new Date()` captured at init would read as
+  // the summary time and make duration_sec 0 on every run. k6's own
+  // state.testRunDurationMs is the only trustworthy source of elapsed time.
+  const endedAt = new Date();
+  const durationMs = data.state?.testRunDurationMs;
+  let startedAtIso: string;
+  if (typeof durationMs === 'number' && Number.isFinite(durationMs)) {
+    startedAtIso = new Date(endedAt.getTime() - durationMs).toISOString();
+  } else {
+    // Do not invent a start time. An unparseable value makes buildSummary leave
+    // duration_sec null, which is recoverable; a fabricated number is not.
+    startedAtIso = 'unknown';
+    summaryWarnings.push(
+      'k6 did not report state.testRunDurationMs; run start time and duration are unknown',
+    );
+  }
+
+  // Read the failure total from the metric, never from the module-scope
+  // errorCount — see the note on errorCount above.
+  const sendErrorTotal =
+    (data.metrics.send_errors as { values?: { count?: number } } | undefined)?.values?.count ?? 0;
+
+  const summary = buildSummary({
+    run_id: run.run_id,
+    started_at: startedAtIso,
+    ended_at: endedAt.toISOString(),
+    k6_version: __ENV.K6_VERSION || 'unknown',
+    // Redacted: the summary is written to disk and uploaded to S3, so anything
+    // left in resolved_config is published. See src/config/redact.ts.
+    resolved_config: redactProfile(run.profile),
+    gen_index: run.gen_index,
+    gen_count: run.gen_count,
+    rate: {
+      requested_eps: scenario.requested_peak_eps,
+      achieved_eps: scenario.achieved_peak_eps,
+      delta_pct: scenario.delta_pct,
+    },
+    metrics: data.metrics,
+    payload_sample: PAYLOAD_SAMPLE,
+    warnings: [
+      ...scenario.warnings,
+      ...summaryWarnings,
+      ...(sendErrorTotal > LOG_FIRST
+        ? [
+            `${sendErrorTotal} send failures occurred (run-wide total); console ` +
+              `logging is capped at ${LOG_FIRST} per VU, so the console may not show them all`,
+          ]
+        : []),
+    ],
+  });
+
+  return {
+    'summary.json': JSON.stringify(summary, null, 2),
+    stdout: renderSummary(summary),
+  };
+}
