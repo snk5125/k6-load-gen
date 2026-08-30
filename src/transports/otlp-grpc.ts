@@ -71,15 +71,29 @@ export const createOtlpGrpcTransport: TransportFactory = (cfg) => {
     }
   }
 
+  let connectFailed = false;
+  let connectError = '';
+
   return {
     name: 'otlp-grpc',
 
-    connect() {
+    async connect() {
       // One connection per VU: an NLB pins flows per connection.
-      client.connect(endpoint, { plaintext, timeout });
+      try {
+        client.connect(endpoint, { plaintext, timeout });
+        connectFailed = false;
+      } catch (err) {
+        // Recorded, not thrown: an unguarded throw here aborts the iteration
+        // before send() can report the failure through the normal counters.
+        connectFailed = true;
+        connectError = String(err);
+      }
     },
 
-    send(events, _ctx): SendResult {
+    async send(events, _ctx): Promise<SendResult> {
+      if (connectFailed) {
+        return { ok: false, status: 'connect-failed', wire_bytes: null, error: connectError };
+      }
       try {
         const payload = {
           resourceLogs: [
@@ -113,7 +127,7 @@ export const createOtlpGrpcTransport: TransportFactory = (cfg) => {
       }
     },
 
-    close() {
+    async close() {
       closeClient();
     },
   };

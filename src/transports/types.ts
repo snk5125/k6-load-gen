@@ -16,11 +16,18 @@ export interface SendContext {
 
 export interface Transport {
   readonly name: string;
-  /** Lazy, per-VU. A no-op for connectionless transports. */
-  connect(): void;
-  /** MUST NOT throw. Failures are returned as data. */
-  send(events: LogEvent[], ctx: SendContext): SendResult;
-  close(): void;
+  /** Lazy, per-VU. A no-op for connectionless transports. MUST NOT reject. */
+  connect(): Promise<void>;
+  /**
+   * MUST NOT throw AND MUST NOT REJECT. Failures are returned as data.
+   *
+   * The never-reject half is new and is easy to get wrong: a rejected Promise
+   * is not caught by a `try/catch` placed around a call that is not awaited,
+   * so every async implementation must handle its own rejection path
+   * explicitly rather than relying on a caller's guard.
+   */
+  send(events: LogEvent[], ctx: SendContext): Promise<SendResult>;
+  close(): Promise<void>;
 }
 
 export interface TransportConfig {

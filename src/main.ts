@@ -104,9 +104,9 @@ let connected = false;
 
 // ------------------------------------------------------------------ VU context
 
-export default function (): void {
+export default async function (): Promise<void> {
   if (!connected) {
-    transport.connect();
+    await transport.connect();
     connected = true;
   }
 
@@ -114,7 +114,7 @@ export default function (): void {
   const batch = generator.batchAt(iteration, Date.now());
 
   const started = Date.now();
-  const res = transport.send(batch, {
+  const res = await transport.send(batch, {
     run_id: run.run_id,
     gen_index: run.gen_index,
     iteration,
