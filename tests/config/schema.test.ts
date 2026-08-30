@@ -159,6 +159,16 @@ describe('validateProfile — per-transport option validation', () => {
     expect(r.errors.join(' ')).toMatch(/rfc/);
   });
 
+  it('rejects a non-boolean value for syslog tls — this guarantee is load-bearing for run-summary publication', () => {
+    // tls must stay a strict boolean: a later task allowlists tls for
+    // publication into the run summary specifically because this validator
+    // guarantees it can never be an object. If an object like a private key
+    // ever slipped through here, it would get published to object storage.
+    const r = validateProfile({ ...valid, target: { transport: 'syslog', endpoint: 'a:514', options: { tls: { key: 'x' } } } });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/tls/);
+  });
+
   it('accepts every option the spec documents for each transport', () => {
     const cases: Array<[string, string | undefined, Record<string, unknown>]> = [
       ['otlp-grpc', 'a:4317', { plaintext: true, timeout: '10s', resource_attributes: { 'service.name': 'x' } }],
@@ -180,6 +190,16 @@ describe('validateProfile — per-transport option validation', () => {
     expect(r.ok).toBe(false);
     expect(r.errors.join(' ')).toMatch(/template/);
     expect(r.errors.join(' ')).toMatch(/json-app/);
+  });
+
+  it('rejects an inherited Object.prototype key as a template name, not just a missing own key', () => {
+    // TEMPLATES is a plain object literal, so a naive `in` check would let
+    // "constructor", "toString", etc. through as if they were real
+    // templates. Assert it is rejected for the right reason: the error
+    // names the bogus value as an unknown template, the same way "nope" is.
+    const r = validateProfile({ ...valid, payload: { ...valid.payload, template: 'constructor' } });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/payload\.template.*must be one of.*json-app/);
   });
 
   it('collects an option error alongside other errors rather than short-circuiting', () => {

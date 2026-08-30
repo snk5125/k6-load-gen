@@ -246,7 +246,7 @@ export function validateProfile(raw: unknown): ValidationResult {
     const p = raw.payload;
     if (typeof p.template !== 'string' || p.template.length === 0) {
       errors.push('payload.template: must be a non-empty string');
-    } else if (!(p.template in TEMPLATES)) {
+    } else if (!Object.prototype.hasOwnProperty.call(TEMPLATES, p.template)) {
       errors.push(
         `payload.template: must be one of ${Object.keys(TEMPLATES).join(', ')}`,
       );
