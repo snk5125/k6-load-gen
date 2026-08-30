@@ -29,16 +29,36 @@ function escapeSdValue(v: string): string {
 }
 
 // A syslog message is one line on the wire; framing (frame(), below) is the
-// only thing allowed to introduce a delimiter. A newline embedded in ANY
-// interpolated field — body is arbitrary generated content, but app_name is
-// operator-supplied config and run_id/gen_index/seq come from the harness —
-// would otherwise split one event into two for the receiver, so every field
-// that lands in the message is passed through this rather than trusted.
-// escapeSdValue (above) is a DIFFERENT concern: it makes a value safe inside
-// an RFC 5424 SD-VALUE's quoting, but does not touch newlines, and RFC 3164
-// has no SD-VALUE quoting at all — so this still has to run everywhere.
+// only thing allowed to introduce a delimiter. A newline embedded in a free
+// text field — body is arbitrary generated content, run_id comes from the
+// harness — would otherwise split one event into two for the receiver, so
+// every free-text field that lands in the message is passed through this
+// rather than trusted. escapeSdValue (above) is a DIFFERENT concern: it
+// makes a value safe inside an RFC 5424 SD-VALUE's quoting, but does not
+// touch newlines, and RFC 3164 has no SD-VALUE quoting at all — so this
+// still has to run everywhere a free-text field is interpolated.
+//
+// app_name does NOT use this — see sanitizeAppName below. A newline turns
+// into a harmless space in free text, but APP-NAME is a single positional
+// token: a space (or any other stray character) inside it shifts every
+// field after it out of phase for the receiver, which oneLine()'s
+// space-substitution would not fix.
 function oneLine(s: string): string {
   return s.replace(/\r\n|\r|\n/g, ' ');
+}
+
+// RFC 5424's APP-NAME is a single PRINTUSASCII token (no spaces, no control
+// characters) with NILVALUE "-" when absent; RFC 3164's TAG is positional
+// the same way. Unlike body/run_id (free text where a stray delimiter is a
+// framing problem), a malformed APP-NAME corrupts the header's own field
+// boundaries — a space in it makes HOSTNAME/APP-NAME/PROCID/MSGID parse one
+// position out of phase, and an empty string leaves an invalid empty field
+// where the grammar requires NILVALUE. Disallowed characters are replaced
+// (not stripped) so the token's presence is still visible; empty input, or
+// input that sanitizes to nothing, falls back to NILVALUE.
+function sanitizeAppName(name: string): string {
+  const cleaned = name.replace(/[^\x21-\x7E]/g, '_');
+  return cleaned.length > 0 ? cleaned : '-';
 }
 
 function pad2(n: number): string {
@@ -54,7 +74,7 @@ export function formatRfc5424(e: LogEvent, appName: string): string {
     `seq="${escapeSdValue(String(e.seq))}"]`;
   const body = oneLine(e.body);
   // <PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA MSG
-  return `<${pri}>1 ${timestamp} - ${oneLine(appName)} - - ${sd} ${body}`;
+  return `<${pri}>1 ${timestamp} - ${sanitizeAppName(appName)} - - ${sd} ${body}`;
 }
 
 // Legacy BSD syslog (RFC 3164 §4.1.1): "Mmm dd hh:mm:ss" timestamp, no
@@ -75,7 +95,7 @@ export function formatRfc3164(e: LogEvent, appName: string): string {
     `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`;
   const body = oneLine(e.body);
   const meta = `run_id="${oneLine(e.run_id)}" gen_index="${e.gen_index}" seq="${e.seq}"`;
-  return `<${pri}>${timestamp} - ${oneLine(appName)}: ${meta} ${body}`;
+  return `<${pri}>${timestamp} - ${sanitizeAppName(appName)}: ${meta} ${body}`;
 }
 
 // UTF-8 byte length of a string without Buffer (not available in k6).

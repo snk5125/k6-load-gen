@@ -8,11 +8,15 @@ export const options = { vus: 1, iterations: 1 };
 // treated as an iteration error and does NOT fail the run's exit code. A
 // probe that can't fail proves nothing.
 //
-// This probe deliberately does NOT call connect(): createSyslogTransport's
-// factory does not construct a `k6/x/tcp` Socket itself (connect() does,
-// lazily) — verified live that a Socket constructed and never connected
-// nor destroyed hangs the whole k6 process at shutdown, so a probe that DID
-// connect here would need to also close() before the script ends.
+// This probe does not call connect() or send(): neither the factory nor
+// connect() constructs a `k6/x/tcp` Socket — send() does, once per batch,
+// and destroys it again before returning (see the module comment in
+// src/transports/syslog.ts). Verified live that an undestroyed Socket
+// hangs the whole k6 process at shutdown even after a fully successful
+// connect+write, which is why send() owns the Socket's entire lifecycle
+// itself rather than leaving cleanup to a caller — this probe has nothing
+// extra to clean up because construction alone (what it exercises) never
+// touches k6/x/tcp at all.
 const t = createTransport('syslog', {
   endpoint: '127.0.0.1:1',
   options: { rfc: 5424, framing: 'octet-counted', tls: false, app_name: 'k6' },
