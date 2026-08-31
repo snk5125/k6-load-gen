@@ -1,12 +1,31 @@
 import { buildField, type FieldGenerator } from './fields.ts';
 import type { LogEvent, PayloadSpec } from './types.ts';
-import { jsonApp, type Template } from './templates/json-app.ts';
+import { FAMILIES } from '../logtypes/families/index.ts';
+import { LOG_TYPES } from '../logtypes/registry.ts';
+import type { LogTypeDef } from '../logtypes/types.ts';
 
-export type { Template };
+export type Template = (
+  fields: Record<string, string>,
+  ts_ms: number,
+  seq: number,
+) => { severity: string; body: string };
 
-export const TEMPLATES: Record<string, Template> = {
-  'json-app': jsonApp,
-};
+/** A def with no `severity` (or a `from` field the event lacks) falls back to 'INFO'. */
+function severityOf(def: LogTypeDef, fields: Record<string, string>): string {
+  if (!def.severity) return 'INFO';
+  if ('const' in def.severity) return def.severity.const;
+  return fields[def.severity.from] ?? 'INFO';
+}
+
+export const TEMPLATES: Record<string, Template> = Object.fromEntries(
+  Object.values(LOG_TYPES).map((def) => [
+    def.name,
+    (fields: Record<string, string>, ts_ms: number, seq: number) => ({
+      severity: severityOf(def, fields),
+      body: FAMILIES[def.family].serialize(def, fields, ts_ms, seq),
+    }),
+  ]),
+);
 
 export interface GeneratorContext {
   run_id: string;
@@ -43,7 +62,7 @@ export function buildGenerator(
       for (let f = 0; f < names.length; f++) {
         fields[names[f]] = gens[f].valueAt(seq);
       }
-      const { severity, body } = template(fields, seq);
+      const { severity, body } = template(fields, now_ms, seq);
       out[i] = {
         ts_ms: now_ms,
         severity,
