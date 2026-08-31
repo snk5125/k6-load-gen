@@ -140,9 +140,9 @@ than what a one-record-per-envelope run would suggest.
 
 **Field values are synthetic.** Cardinality is realistic — the generator drives the same number of
 distinct values, with the same skew, a real deployment would see — but the values themselves are
-not real. CloudTrail's `awsRegion` values are tokens like `region-3`, not `us-east-1`; ARNs are
-`arn:synthetic::0:role/r-7`, not a real account or role. A downstream rule keyed on a real value
-(a specific region, a specific role ARN) will not fire against this traffic.
+not real. CloudTrail's `awsRegion` values are tokens like `region-3`, never an actual AWS region
+name; ARNs are `arn:synthetic::0:role/r-7`, not a real account or role. A downstream rule keyed on
+a real value (a specific region, a specific role ARN) will not fire against this traffic.
 
 **Live delivery has been verified for `auditd`, `cloudtrail` and `nginx-access` over `hec`, not
 over `otlp-grpc`.** `mixed-estate.json` (the shipped profile declaring all three) targets
