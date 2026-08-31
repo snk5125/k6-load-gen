@@ -6,8 +6,8 @@
         "id": "regex_extract",
         "filter": "true",
         "conf": {
-          "regex": "^type=(?<type>\\S+) msg=audit\\((?<epoch>\\d+\\.\\d{3}):(?<serial>\\d+)\\): (?<rest>.*)$",
-          "srcField": "_raw"
+          "regex": "/^type=(?<type>\\S+) msg=audit\\((?<epoch>\\d+\\.\\d{3}):(?<serial>\\d+)\\): (?<rest>.*)$/",
+          "source": "_raw"
         }
       },
       {
@@ -24,7 +24,8 @@
         "filter": "true",
         "conf": {
           "remove": [
-            "rest"
+            "rest",
+            "_raw"
           ]
         }
       },

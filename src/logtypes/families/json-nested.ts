@@ -55,7 +55,16 @@ export const jsonNested: FamilyModule = {
 
   parseArtifact(def: LogTypeDef): ParseArtifact {
     if (def.envelope) {
-      return { kind: 'json', nested: true, envelope: { wrap: def.envelope.wrap } };
+      // Mirrors what serialize() actually writes onto `record` besides
+      // def.fields: constants (set first, above) and `eventTime` (always
+      // derived from ts_ms — see this module's doc comment). Cribl's
+      // renderer projects this list out of the envelope explicitly since
+      // it has no equivalent to Vector's whole-record `. = .Records[0]`
+      // unwrap; letting either drift out of sync here is exactly the bug
+      // this field exists to prevent (see IMPORTANT 2, whole-branch
+      // review: cloudtrail's eventVersion/eventTime were silently dropped).
+      const extraFields = [...Object.keys(def.constants ?? {}), 'eventTime'];
+      return { kind: 'json', nested: true, envelope: { wrap: def.envelope.wrap, extraFields } };
     }
     return { kind: 'json', nested: true };
   },

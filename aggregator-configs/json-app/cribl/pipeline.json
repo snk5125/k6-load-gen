@@ -10,6 +10,15 @@
           "srcField": "_raw",
           "mode": "extract"
         }
+      },
+      {
+        "id": "eval",
+        "filter": "true",
+        "conf": {
+          "remove": [
+            "_raw"
+          ]
+        }
       }
     ]
   }

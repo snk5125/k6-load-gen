@@ -17,6 +17,14 @@
         "conf": {
           "add": [
             {
+              "name": "eventVersion",
+              "value": "Records[0].eventVersion"
+            },
+            {
+              "name": "eventTime",
+              "value": "Records[0].eventTime"
+            },
+            {
               "name": "userIdentity.type",
               "value": "Records[0].userIdentity.type"
             },
@@ -48,7 +56,8 @@
         "filter": "true",
         "conf": {
           "remove": [
-            "Records"
+            "Records",
+            "_raw"
           ]
         }
       }

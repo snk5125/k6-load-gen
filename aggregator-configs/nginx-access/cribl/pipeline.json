@@ -6,8 +6,17 @@
         "id": "regex_extract",
         "filter": "true",
         "conf": {
-          "regex": "^(?<remote_addr>\\S+) \\S+ (?<remote_user>\\S+) \\[(?<time_local>[^\\]]+)\\] \"(?<request_method>\\S+) (?<request_uri>[^\"]*) (?<server_protocol>[^\"]*)\" (?<status>\\d{3}) (?<body_bytes_sent>\\d+) \"(?<http_referer>[^\"]*)\" \"(?<http_user_agent>[^\"]*)\"$",
-          "srcField": "_raw"
+          "regex": "/^(?<remote_addr>\\S+) \\S+ (?<remote_user>\\S+) \\[(?<time_local>[^\\]]+)\\] \"(?<request_method>\\S+) (?<request_uri>[^\"]*) (?<server_protocol>[^\"]*)\" (?<status>\\d{3}) (?<body_bytes_sent>\\d+) \"(?<http_referer>[^\"]*)\" \"(?<http_user_agent>[^\"]*)\"$/",
+          "source": "_raw"
+        }
+      },
+      {
+        "id": "eval",
+        "filter": "true",
+        "conf": {
+          "remove": [
+            "_raw"
+          ]
         }
       },
       {

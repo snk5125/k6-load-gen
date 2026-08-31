@@ -21,11 +21,15 @@ interface CriblFunction {
  * (a named-capture regex), `serde` (`type: 'kvp'` for key=value, `type:
  * 'json'` for JSON), and `eval` for type coercion and field removal.
  *
- * Written from Cribl's documented pipeline/function shapes, not verified
- * against a running Cribl instance — no instance is available here (see
- * task-6-brief.md, which owns the manual verification procedure). Treat
- * the exact function conf keys as the part most likely to need correction
- * against a real Cribl Stream deployment.
+ * Written from Cribl's documented pipeline/function shapes. `regex_extract`
+ * and `serde`'s conf keys are now verified against stock functions read off
+ * a live Cribl instance (whole-branch review, IMPORTANT 1 — see the
+ * per-function comments below for exactly what was checked against what;
+ * the two functions genuinely use different source-field key names, which
+ * is why this could not be settled from memory alone). `eval`'s `add`/
+ * `remove` shape and the full manual field-by-field check remain
+ * unverified against a running instance — see
+ * aggregator-configs/README.md's "Manual Cribl check" for that procedure.
  */
 export function renderCriblPipeline(def: LogTypeDef): RenderedConfig {
   const artifact = FAMILIES[def.family].parseArtifact(def);
@@ -48,8 +52,18 @@ function buildFunctions(def: LogTypeDef, artifact: ParseArtifact): CriblFunction
       fns.push({
         id: 'regex_extract',
         filter: 'true',
-        conf: { regex: artifact.pattern, srcField: '_raw' },
+        // Verified against a live Cribl instance (whole-branch review,
+        // IMPORTANT 1): all four stock regex_extract functions read
+        // `source` (not `srcField`), and every stored regex is a
+        // delimited literal (`/…/`), never a bare pattern string.
+        conf: { regex: `/${artifact.pattern}/`, source: '_raw' },
       });
+      // `_raw` is preserved by regex_extract by default — unlike every
+      // Vector branch, which drops `.message` right after parsing (see
+      // src/aggregator/vector.ts). Removing it here keeps an ingest-byte
+      // comparison between the two vendors honest instead of double-
+      // counting Cribl's raw line (whole-branch review, IMPORTANT 3).
+      fns.push({ id: 'eval', filter: 'true', conf: { remove: ['_raw'] } });
       break;
 
     case 'kv':
@@ -59,7 +73,9 @@ function buildFunctions(def: LogTypeDef, artifact: ParseArtifact): CriblFunction
       fns.push({
         id: 'regex_extract',
         filter: 'true',
-        conf: { regex: artifact.prefixPattern, srcField: '_raw' },
+        // Same `source`/delimited-regex correction as the regex-kind case
+        // above, verified the same way (whole-branch review, IMPORTANT 1).
+        conf: { regex: `/${artifact.prefixPattern}/`, source: '_raw' },
       });
       // Cribl's built-in kvp serde owns its own quoting rules, the same
       // way pairPattern owns Vector's — but its defaults must agree with
@@ -71,37 +87,56 @@ function buildFunctions(def: LogTypeDef, artifact: ParseArtifact): CriblFunction
       fns.push({
         id: 'serde',
         filter: 'true',
+        // `srcField` (unlike regex_extract's `source`) verified correct
+        // as already written: the stock `cisco_estreamer` pipeline's
+        // serde function uses exactly `{mode, type: 'kvp', srcField:
+        // '_raw'}` (whole-branch review, IMPORTANT 1 — the two function
+        // types genuinely use different key names).
         conf: { type: 'kvp', srcField: 'rest', mode: 'extract' },
       });
-      // Field removal: `rest` was only ever a carrier for the kvp body.
-      fns.push({ id: 'eval', filter: 'true', conf: { remove: ['rest'] } });
+      // Field removal: `rest` was only ever a carrier for the kvp body;
+      // `_raw` goes too, for the same reason as the regex case above
+      // (whole-branch review, IMPORTANT 3).
+      fns.push({ id: 'eval', filter: 'true', conf: { remove: ['rest', '_raw'] } });
       break;
 
     case 'json': {
       fns.push({
         id: 'serde',
         filter: 'true',
+        // `srcField` verified correct as written — see the kv case's
+        // serde comment above.
         conf: { type: 'json', srcField: '_raw', mode: 'extract' },
       });
       if (artifact.envelope) {
         const wrap = artifact.envelope.wrap;
-        // Project every declared field out of the one-record array
+        // Project every declared field, plus every non-field key the
+        // family writes onto the record (`extraFields` — see
+        // json-nested.ts's parseArtifact), out of the one-record array
         // envelope and onto the root event, in declaration order — driven
-        // by def.fields, not a hand-picked list. parse_json-equivalent
+        // by the artifact and def.fields, never a hand-picked list.
+        // Vector's `. = .Records[0]` keeps the whole record for free;
+        // Cribl has no equivalent wholesale-replace, so this list has to
+        // be kept in lockstep with everything serialize() actually writes
+        // (whole-branch review, IMPORTANT 2 — this used to silently drop
+        // cloudtrail's eventVersion/eventTime). parse_json-equivalent
         // extraction above preserves nested structure, so a dotted path
         // (e.g. userIdentity.arn) is just a chained property read here.
+        const extraFields = artifact.envelope.extraFields ?? [];
+        const paths = [...extraFields, ...def.fields.map((f) => f.path ?? f.name)];
         fns.push({
           id: 'eval',
           filter: 'true',
           conf: {
-            add: def.fields.map((f) => {
-              const path = f.path ?? f.name;
-              return { name: path, value: `${wrap}[0].${path}` };
-            }),
+            add: paths.map((path) => ({ name: path, value: `${wrap}[0].${path}` })),
           },
         });
-        // Field removal: the envelope array is now redundant.
-        fns.push({ id: 'eval', filter: 'true', conf: { remove: [wrap] } });
+        // Field removal: the envelope array is now redundant, and `_raw`
+        // goes for the same reason as the regex/kv cases above
+        // (whole-branch review, IMPORTANT 3).
+        fns.push({ id: 'eval', filter: 'true', conf: { remove: [wrap, '_raw'] } });
+      } else {
+        fns.push({ id: 'eval', filter: 'true', conf: { remove: ['_raw'] } });
       }
       break;
     }

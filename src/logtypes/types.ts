@@ -47,7 +47,22 @@ export interface FamilyModule {
 }
 
 export type ParseArtifact =
-  | { kind: 'json'; nested: boolean; envelope?: { wrap: string } }
+  | {
+      kind: 'json';
+      nested: boolean;
+      /**
+       * `extraFields`: dotted paths the family writes onto the record
+       * besides `def.fields` (e.g. json-nested's constants and its
+       * always-derived `eventTime`) — only meaningful with `wrap` set.
+       * Vector's envelope unwrap (`. = .<wrap>[0]`) keeps the whole record
+       * for free; Cribl's renderer has no equivalent wholesale-replace, so
+       * it must know every extra key to project out of the envelope
+       * alongside `def.fields` (src/aggregator/cribl.ts) — driven by the
+       * family, never a hand-picked list, same rule as everything else
+       * ParseArtifact carries.
+       */
+      envelope?: { wrap: string; extraFields?: string[] };
+    }
   // `separator` is the character serialize joins pairs with (for a reader
   // that only needs to know the field delimiter). `pairPattern` is the
   // grammar the family actually generates — key=value with quoting on
