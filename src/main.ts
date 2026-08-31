@@ -97,6 +97,7 @@ export const options = {
   thresholds: buildThresholds({
     profile_thresholds: run.profile.thresholds,
     abort_on_fail: abortOnFail,
+    active_types: run.active_types,
   }),
   summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
 };
