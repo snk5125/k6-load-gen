@@ -202,12 +202,12 @@ HTTP/gRPC transports' to leave room for that — see the profile for the current
 
 **Delivery has been verified live; strict-receiver conformance has not.** The live check used `nc`
 listening on a TCP port, which confirms framing and end-to-end delivery but says nothing about
-whether a real syslog daemon would accept the message. Two known gaps remain undocumented-away
-by that check: the structured-data ID emitted for the `[meta ...]` block does not follow RFC 5424
-§6.3.2 (which wants `name@<enterprise-number>` for anything with custom parameters, not a bare
-`meta`), and no UTF-8 BOM precedes MSG as §6.4 recommends. Neither is fixed here — see "Do NOT fix"
-in the branch's review ledger — but a reader picking `syslog` against a strict receiver should know
-both before assuming conformance.
+whether a real syslog daemon would accept the message. Two known conformance gaps sit
+outside what that check can see: the structured-data ID emitted for the `[meta ...]` block does not
+follow RFC 5424 §6.3.2 (which wants `name@<enterprise-number>` for anything carrying custom
+parameters, not a bare `meta`), and no UTF-8 BOM precedes MSG as §6.4 recommends. Neither is fixed
+here, but a reader pointing `syslog` at a strict receiver should know about both before assuming
+conformance.
 
 ### `null`
 
