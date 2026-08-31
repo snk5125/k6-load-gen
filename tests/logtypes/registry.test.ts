@@ -20,8 +20,9 @@ describe('log type registry', () => {
   });
 
   it('names the available families when one is not yet registered', () => {
-    // 'kv-audit' is a real FormatFamily (auditd, a later task) but has no
-    // module yet — the mirror of the type-name test above, on the family axis.
-    expect(() => FAMILIES['kv-audit']).toThrow(/kv-audit.*available.*json-flat/s);
+    // 'json-nested' is a real FormatFamily but has no module yet (no
+    // definition currently needs deep nesting) — the mirror of the
+    // type-name test above, on the family axis.
+    expect(() => FAMILIES['json-nested']).toThrow(/json-nested.*available.*json-flat/s);
   });
 });

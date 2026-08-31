@@ -6,10 +6,6 @@ import type { ParseArtifact } from '../../src/logtypes/types.ts';
  * actually describe how to read what its `serialize()` wrote — a family
  * whose two halves drift fails a round-trip test by construction, rather
  * than by someone remembering to assert it by hand.
- *
- * `kv` and `regex` are left unimplemented on purpose: writing a parser for
- * a grammar that doesn't exist yet (auditd, nginx CLF land in later tasks)
- * would be guessing.
  */
 export function parseWithArtifact(
   artifact: ParseArtifact,
@@ -21,7 +17,37 @@ export function parseWithArtifact(
       // The artifact — not the test — decides whether to unwrap an envelope.
       return artifact.envelope ? parsed[artifact.envelope.wrap][0] : parsed;
     }
+    case 'kv': {
+      // The prefix pattern captures the fixed grammar (type, epoch, serial)
+      // plus a `rest` group holding the key=value body. `rest` is split on
+      // artifact.separator, honoring a quoted "k=v with spaces" value as one
+      // pair and unescaping \" back to " — the inverse of what kv-audit's
+      // formatKvValue does.
+      const m = new RegExp(artifact.prefixPattern).exec(body);
+      if (!m || !m.groups) {
+        throw new Error('parseWithArtifact: body does not match the kv prefix pattern');
+      }
+      const { rest, ...prefixGroups } = m.groups;
+      const result: Record<string, unknown> = { ...prefixGroups };
+      const pairPattern = /(\S+?)=("(?:[^"\\]|\\.)*"|\S*)/g;
+      let pair: RegExpExecArray | null;
+      while ((pair = pairPattern.exec(rest ?? ''))) {
+        const [, key, rawValue] = pair;
+        result[key] =
+          rawValue.startsWith('"') && rawValue.endsWith('"')
+            ? rawValue.slice(1, -1).replace(/\\"/g, '"')
+            : rawValue;
+      }
+      return result;
+    }
+    case 'regex': {
+      const m = new RegExp(artifact.pattern).exec(body);
+      if (!m || !m.groups) {
+        throw new Error('parseWithArtifact: body does not match the pattern');
+      }
+      return { ...m.groups };
+    }
     default:
-      throw new Error(`parseWithArtifact: not implemented for kind "${artifact.kind}"`);
+      throw new Error(`parseWithArtifact: not implemented for kind "${(artifact as ParseArtifact).kind}"`);
   }
 }
