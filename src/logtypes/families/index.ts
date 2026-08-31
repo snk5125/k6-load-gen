@@ -2,11 +2,13 @@ import type { FamilyModule, FormatFamily } from '../types.ts';
 import { jsonFlat } from './json-flat.ts';
 import { kvAudit } from './kv-audit.ts';
 import { regexClf } from './regex-clf.ts';
+import { jsonNested } from './json-nested.ts';
 
 const registered: Partial<Record<FormatFamily, FamilyModule>> = {
   'json-flat': jsonFlat,
   'kv-audit': kvAudit,
   'regex-clf': regexClf,
+  'json-nested': jsonNested,
 };
 
 /**

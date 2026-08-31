@@ -19,10 +19,13 @@ describe('log type registry', () => {
     }
   });
 
-  it('names the available families when one is not yet registered', () => {
-    // 'json-nested' is a real FormatFamily but has no module yet (no
-    // definition currently needs deep nesting) — the mirror of the
-    // type-name test above, on the family axis.
-    expect(() => FAMILIES['json-nested']).toThrow(/json-nested.*available.*json-flat/s);
+  it('names the available families when one is not registered', () => {
+    // Every FormatFamily now has a module (json-nested joined the others in
+    // Task 4) — the mirror of the type-name test above, on the family axis,
+    // exercised with a typo'd name since there's no longer a real,
+    // unregistered family to reach for.
+    expect(() => FAMILIES['json-nestedx' as never]).toThrow(
+      /json-nestedx.*available.*json-flat/s,
+    );
   });
 });
