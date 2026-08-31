@@ -1,13 +1,11 @@
 import exec from 'k6/execution';
 
-import { profileName, readOverrides } from './config/env.ts';
+import { profileName, readOverrides, readTypeOverrides } from './config/env.ts';
 import { validateProfile, type Profile } from './config/schema.ts';
 import { resolveRun } from './config/resolve.ts';
 import { redactProfile } from './config/redact.ts';
-import { SHAPES } from './scenarios/shapes.ts';
-import { resolveScenario } from './scenarios/resolve.ts';
 import { buildThresholds } from './metrics/thresholds.ts';
-import { buildGenerator } from './payload/generator.ts';
+import { buildGenerator, type BatchGenerator } from './payload/generator.ts';
 import { createTransport } from './transports/registry.ts';
 import { buildSummary } from './summary/build.ts';
 import { renderSummary } from './summary/render.ts';
@@ -48,39 +46,67 @@ if (!validation.ok) {
   );
 }
 
-const run = resolveRun(raw as Profile, readOverrides());
-const shape = SHAPES[run.profile.scenario];
+const profile = raw as Profile;
+const typeOverrides = readTypeOverrides(Object.keys(profile.types));
+for (const w of typeOverrides.warnings) console.warn(`CONFIG WARNING: ${w}`);
 
-const scenario = resolveScenario({
-  shape,
-  anchor: run.profile.anchor,
-  batch_size: run.profile.payload.batch_size,
-  gen_count: run.gen_count,
-  duration_scale: run.duration_scale,
-});
+const run = resolveRun(profile, readOverrides(), typeOverrides);
 
-for (const w of scenario.warnings) console.warn(`CONFIG WARNING: ${w}`);
+// One k6 scenario per active log type. The scenario key IS the log type
+// name — that is what makes exec.scenario.name a valid dispatch key in the
+// default function below, and what makes k6's scenario tag the per-type
+// metric split a later task depends on. Do not rename it.
+//
+// NOTE: buildThresholds and buildSummary below still take a single-run
+// shape (profile_thresholds/abort_on_fail, and one rate/payload_sample)
+// rather than a per-type one. Restructuring those into real per-type
+// breakdowns is a later task's job; until then this file aggregates across
+// active types (OR for abort_on_fail, sum for eps, worst for delta_pct,
+// concatenation for samples/warnings) so a multi-type profile still
+// produces a coherent — if not yet per-type-attributed — summary.
+const scenarios: Record<string, unknown> = {};
+const GENERATORS: Record<string, BatchGenerator> = {};
+for (const type of run.active_types) {
+  const resolved = run.types[type];
+  scenarios[type] = resolved.k6;
+  GENERATORS[type] = buildGenerator(resolved.payload, {
+    run_id: run.run_id,
+    gen_index: run.gen_index,
+  });
+}
+
+for (const type of run.active_types) {
+  for (const w of run.types[type].warnings) console.warn(`CONFIG WARNING [${type}]: ${w}`);
+}
+
+const abortOnFail = run.active_types.some((t) => run.types[t].abort_on_fail);
+const aggregateRate = run.active_types.reduce(
+  (acc, t) => {
+    const r = run.types[t];
+    return {
+      requested_eps: acc.requested_eps + r.requested_peak_eps,
+      achieved_eps: acc.achieved_eps + r.achieved_peak_eps,
+      delta_pct: Math.abs(r.delta_pct) > Math.abs(acc.delta_pct) ? r.delta_pct : acc.delta_pct,
+    };
+  },
+  { requested_eps: 0, achieved_eps: 0, delta_pct: 0 },
+);
 
 export const options = {
-  scenarios: { [run.profile.scenario]: scenario.k6 },
+  scenarios,
   thresholds: buildThresholds({
     profile_thresholds: run.profile.thresholds,
-    abort_on_fail: scenario.abort_on_fail,
+    abort_on_fail: abortOnFail,
   }),
   summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
 };
-
-const generator = buildGenerator(run.profile.payload, {
-  run_id: run.run_id,
-  gen_index: run.gen_index,
-});
 
 const transport = createTransport(run.profile.target.transport, {
   endpoint: run.profile.target.endpoint,
   options: run.profile.target.options,
 });
 
-const PAYLOAD_SAMPLE = generator.expectedAt(0);
+const PAYLOAD_SAMPLE = Object.values(GENERATORS).flatMap((g) => g.expectedAt(0));
 
 // Bounded error logging: an unbounded console.warn against a failing target
 // floods the log tier and slows the generator enough to corrupt the run.
@@ -108,6 +134,14 @@ export default async function (): Promise<void> {
   if (!connected) {
     await transport.connect();
     connected = true;
+  }
+
+  const type = exec.scenario.name;
+  const generator = GENERATORS[type];
+  if (!generator) {
+    // Cannot happen if `scenarios` and `GENERATORS` above are built from the
+    // same list — but if it ever does, fail loudly rather than sending nothing.
+    throw new Error(`no generator for scenario "${type}"`);
   }
 
   const iteration = exec.scenario.iterationInTest;
@@ -185,15 +219,12 @@ export function handleSummary(data: K6SummaryData) {
     resolved_config: redactProfile(run.profile),
     gen_index: run.gen_index,
     gen_count: run.gen_count,
-    rate: {
-      requested_eps: scenario.requested_peak_eps,
-      achieved_eps: scenario.achieved_peak_eps,
-      delta_pct: scenario.delta_pct,
-    },
+    rate: aggregateRate,
     metrics: data.metrics,
     payload_sample: PAYLOAD_SAMPLE,
     warnings: [
-      ...scenario.warnings,
+      ...run.active_types.flatMap((t) => run.types[t].warnings),
+      ...typeOverrides.warnings,
       ...summaryWarnings,
       ...(sendErrorTotal > LOG_FIRST
         ? [
