@@ -1,0 +1,11 @@
+{
+  "transforms": {
+    "cloudtrail": {
+      "type": "remap",
+      "inputs": [
+        "in"
+      ],
+      "source": ". = parse_json!(.message)\n. = .Records[0]"
+    }
+  }
+}

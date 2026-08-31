@@ -1,0 +1,16 @@
+{
+  "id": "json-app",
+  "conf": {
+    "functions": [
+      {
+        "id": "serde",
+        "filter": "true",
+        "conf": {
+          "type": "json",
+          "srcField": "_raw",
+          "mode": "extract"
+        }
+      }
+    ]
+  }
+}

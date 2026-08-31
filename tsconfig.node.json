@@ -25,5 +25,5 @@
   // pulls in @types/node via a peerDependency, see the comment in
   // tsconfig.json for why that made splitting the *.test.ts files
   // necessary rather than optional).
-  "include": ["src/timeline/cli.ts", "src/storage/index-cli.ts", "tests/**/*.test.ts"]
+  "include": ["src/timeline/cli.ts", "src/storage/index-cli.ts", "src/aggregator/cli.ts", "tests/**/*.test.ts"]
 }

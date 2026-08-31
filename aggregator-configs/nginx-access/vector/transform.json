@@ -1,0 +1,11 @@
+{
+  "transforms": {
+    "nginx-access": {
+      "type": "remap",
+      "inputs": [
+        "in"
+      ],
+      "source": ". |= parse_regex!(.message, r'^(?<remote_addr>\\S+) \\S+ (?<remote_user>\\S+) \\[(?<time_local>[^\\]]+)\\] \"(?<request_method>\\S+) (?<request_uri>[^\"]*) (?<server_protocol>[^\"]*)\" (?<status>\\d{3}) (?<body_bytes_sent>\\d+) \"(?<http_referer>[^\"]*)\" \"(?<http_user_agent>[^\"]*)\"$')\ndel(.message)\n.status = to_int!(.status)\n.body_bytes_sent = to_int!(.body_bytes_sent)"
+    }
+  }
+}

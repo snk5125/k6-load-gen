@@ -40,6 +40,14 @@ jobs:
       - name: Test
         run: npm test
 
+      # A definition change that does not regenerate leaves stale configs
+      # committed — which is exactly the drift this sub-project exists to
+      # prevent. Regenerate and fail if anything moved.
+      - name: Aggregator configs are up to date
+        run: |
+          npm run aggregator-configs
+          git diff --exit-code -- aggregator-configs/
+
       # The bundles are what ship in the image. Building them here catches an
       # esbuild-level break that the unit tests would not.
       - name: Build CLI bundles

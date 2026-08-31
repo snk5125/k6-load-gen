@@ -1,0 +1,11 @@
+{
+  "transforms": {
+    "auditd": {
+      "type": "remap",
+      "inputs": [
+        "in"
+      ],
+      "source": ". |= parse_regex!(.message, r'^type=(?<type>\\S+) msg=audit\\((?<epoch>\\d+\\.\\d{3}):(?<serial>\\d+)\\): (?<rest>.*)$')\npairs = parse_regex_all!(.rest, r'(\\S+?)=(\"(?:[^\"\\\\]|\\\\.)*\"|\\S*)', numeric_groups: true)\nfor_each(array!(pairs)) -> |_index, pair| {\n  key = string!(pair.\"1\")\n  raw_value = string!(pair.\"2\")\n  value = if starts_with(raw_value, \"\\\"\") {\n    replace(slice!(raw_value, 1, -1), \"\\\\\\\"\", \"\\\"\")\n  } else {\n    raw_value\n  }\n  . = set!(., [key], value)\n}\ndel(.rest)\ndel(.message)\n.syscall = to_int!(.syscall)\n.exit = to_int!(.exit)\n.uid = to_int!(.uid)\n.gid = to_int!(.gid)"
+    }
+  }
+}

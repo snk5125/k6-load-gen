@@ -1,0 +1,11 @@
+{
+  "transforms": {
+    "json-app": {
+      "type": "remap",
+      "inputs": [
+        "in"
+      ],
+      "source": ". = parse_json!(.message)"
+    }
+  }
+}
