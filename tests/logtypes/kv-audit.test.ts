@@ -61,6 +61,21 @@ describe('kv-audit parseArtifact', () => {
     expect(m!.groups!.epoch).toBe('1788130943.351');
     expect(m!.groups!.serial).toBe('24287');
   });
+
+  // separator alone cannot describe quoting — a reader that only knows the
+  // pair delimiter breaks on the first value containing a space (this is
+  // exactly the drift a whole-branch review caught: the test helper had its
+  // own hand-written quote-aware regex instead of reading this field at
+  // all). pairPattern is what a reader actually needs, and it must describe
+  // quoting on space/`"`/`=`, matching formatKvValue.
+  it('exposes a pairPattern that matches a quoted value, not just a bare token', () => {
+    const a = kvAudit.parseArtifact(auditd) as { kind: 'kv'; pairPattern: string };
+    expect(a.pairPattern).toBeTruthy();
+    const re = new RegExp(a.pairPattern, 'g');
+    const line = kvAudit.serialize(auditd, { ...vals, exe: 'a b"c' }, 1000, 1);
+    const matches = [...line.matchAll(re)].map((m) => m[0]);
+    expect(matches).toContain('exe="a b\\"c"');
+  });
 });
 
 describe('kv-audit round trip via parseWithArtifact', () => {

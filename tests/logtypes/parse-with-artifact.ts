@@ -19,17 +19,19 @@ export function parseWithArtifact(
     }
     case 'kv': {
       // The prefix pattern captures the fixed grammar (type, epoch, serial)
-      // plus a `rest` group holding the key=value body. `rest` is split on
-      // artifact.separator, honoring a quoted "k=v with spaces" value as one
-      // pair and unescaping \" back to " — the inverse of what kv-audit's
-      // formatKvValue does.
+      // plus a `rest` group holding the key=value body. `rest` is scanned
+      // with artifact.pairPattern — the family's OWN description of its
+      // key=value grammar, quoting included — not a private copy of it, so
+      // this can never drift from what serialize() actually wrote. A quoted
+      // "k=v with spaces" value is honored as one pair; \" is unescaped back
+      // to " — the inverse of what kv-audit's formatKvValue does.
       const m = new RegExp(artifact.prefixPattern).exec(body);
       if (!m || !m.groups) {
         throw new Error('parseWithArtifact: body does not match the kv prefix pattern');
       }
       const { rest, ...prefixGroups } = m.groups;
       const result: Record<string, unknown> = { ...prefixGroups };
-      const pairPattern = /(\S+?)=("(?:[^"\\]|\\.)*"|\S*)/g;
+      const pairPattern = new RegExp(artifact.pairPattern, 'g');
       let pair: RegExpExecArray | null;
       while ((pair = pairPattern.exec(rest ?? ''))) {
         const [, key, rawValue] = pair;

@@ -35,5 +35,14 @@ export interface FamilyModule {
 
 export type ParseArtifact =
   | { kind: 'json'; nested: boolean; envelope?: { wrap: string } }
-  | { kind: 'kv'; separator: string; prefixPattern: string }
+  // `separator` is the character serialize joins pairs with (for a reader
+  // that only needs to know the field delimiter). `pairPattern` is the
+  // grammar the family actually generates — key=value with quoting on
+  // space/`"`/`=`, `"` escaped as `\"` — as a regex source string, ready
+  // for `new RegExp(pairPattern, 'g')`. It exists because `separator` alone
+  // cannot describe quoting: a splitter built only from `separator` breaks
+  // on the first value containing a space (see kv-audit.ts's
+  // formatKvValue). The family owns pairPattern, same as prefixPattern, so
+  // it can never drift from what serialize() actually writes.
+  | { kind: 'kv'; separator: string; prefixPattern: string; pairPattern: string }
   | { kind: 'regex'; pattern: string };

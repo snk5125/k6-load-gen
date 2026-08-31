@@ -10,6 +10,15 @@ import type { FamilyModule, LogTypeDef, ParseArtifact } from '../types.ts';
 const PREFIX_PATTERN =
   '^type=(?<type>\\S+) msg=audit\\((?<epoch>\\d+\\.\\d{3}):(?<serial>\\d+)\\): (?<rest>.*)$';
 
+/**
+ * Matches exactly what formatKvValue (below) emits for one `key=value`
+ * pair: a value is either a `"`-quoted string (itself possibly containing
+ * `\"`, `\\`, or any other backslash escape) or a bare non-whitespace
+ * token. Defined as a RegExp so `.source` is always in lockstep with the
+ * pattern actually used at match time — no separate string to drift.
+ */
+const PAIR_REGEX = /(\S+?)=("(?:[^"\\]|\\.)*"|\S*)/;
+
 /** Never emit a newline — before deciding whether a value needs quoting. */
 function stripNewlines(value: string): string {
   return value.replace(/\r?\n/g, ' ');
@@ -41,6 +50,6 @@ export const kvAudit: FamilyModule = {
   },
 
   parseArtifact(_def: LogTypeDef): ParseArtifact {
-    return { kind: 'kv', separator: ' ', prefixPattern: PREFIX_PATTERN };
+    return { kind: 'kv', separator: ' ', prefixPattern: PREFIX_PATTERN, pairPattern: PAIR_REGEX.source };
   },
 };
