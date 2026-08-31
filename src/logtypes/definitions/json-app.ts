@@ -10,10 +10,18 @@ export const jsonApp: LogTypeDef = {
   family: 'json-flat',
   severity: { from: 'level' },
   fields: [
-    { name: 'host', spec: { cardinality: 500, distribution: 'zipf' } },
-    { name: 'service', spec: { cardinality: 20 } },
-    { name: 'level', spec: { values: ['INFO', 'WARN', 'ERROR'], weights: [0.8, 0.15, 0.05] } },
-    { name: 'trace_id', spec: { cardinality: 'unbounded' } },
-    { name: 'message', spec: { cardinality: 50, pad_to: 512 } },
+    {
+      name: 'host',
+      spec: { cardinality: 500, distribution: 'zipf' },
+      parse: { type: 'string', index: true },
+    },
+    { name: 'service', spec: { cardinality: 20 }, parse: { type: 'string', index: true } },
+    {
+      name: 'level',
+      spec: { values: ['INFO', 'WARN', 'ERROR'], weights: [0.8, 0.15, 0.05] },
+      parse: { type: 'string', index: true },
+    },
+    { name: 'trace_id', spec: { cardinality: 'unbounded' }, parse: { type: 'string' } },
+    { name: 'message', spec: { cardinality: 50, pad_to: 512 }, parse: { type: 'string' } },
   ],
 };

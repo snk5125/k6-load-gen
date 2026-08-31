@@ -213,7 +213,9 @@ describe('resolveRun — per-type PayloadSpec construction (Task 1 <-> Task 6 ga
     const fields = r.types.auditd.payload.fields;
     expect(fields.uid).toMatchObject({ cardinality: 50 });
     // Untouched fields keep the LogTypeDef's declared spec exactly.
-    expect(fields.gid).toEqual({ cardinality: 200, distribution: 'zipf' });
+    // gid carries prefix: '' so it generates bare digits (it's typed `int`
+    // in parse metadata) rather than the default `gid-${i}`.
+    expect(fields.gid).toEqual({ cardinality: 200, distribution: 'zipf', prefix: '' });
     expect(fields.exe).toEqual({ cardinality: 'unbounded', prefix: '/usr/bin/host-' });
   });
 

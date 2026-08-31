@@ -22,15 +22,29 @@ export const cloudtrail: LogTypeDef = {
     {
       name: 'userIdentity.type',
       spec: { values: ['AssumedRole', 'IAMUser', 'Root'], weights: [0.75, 0.22, 0.03] },
+      parse: { type: 'string' },
     },
     {
       name: 'userIdentity.arn',
       spec: { cardinality: 'unbounded', prefix: 'arn:synthetic::0:role/r-' },
+      parse: { type: 'string', index: true },
     },
-    { name: 'eventName', spec: { cardinality: 40, distribution: 'zipf' } },
-    { name: 'awsRegion', spec: { cardinality: 12, prefix: 'region-' } },
-    { name: 'sourceIPAddress', spec: { cardinality: 5000, distribution: 'zipf' } },
-    { name: 'eventID', spec: { cardinality: 'unbounded' } },
+    {
+      name: 'eventName',
+      spec: { cardinality: 40, distribution: 'zipf' },
+      parse: { type: 'string', index: true },
+    },
+    {
+      name: 'awsRegion',
+      spec: { cardinality: 12, prefix: 'region-' },
+      parse: { type: 'string', index: true },
+    },
+    {
+      name: 'sourceIPAddress',
+      spec: { cardinality: 5000, distribution: 'zipf' },
+      parse: { type: 'ip', index: true },
+    },
+    { name: 'eventID', spec: { cardinality: 'unbounded' }, parse: { type: 'string' } },
   ],
   envelope: { wrap: 'Records', mode: 'array' },
 };
