@@ -115,8 +115,105 @@ run that breaches an SLO threshold is still perfectly valid; it just found what 
 | Transport | Status |
 |---|---|
 | `otlp-grpc` | implemented |
+| `otlp-http` | implemented |
+| `hec` | implemented |
+| `syslog` | implemented |
 | `null` | implemented — discards everything; measures generator ceiling |
-| `otlp-http`, `hec`, `syslog` | planned |
+
+Each transport reads its `target.options` from the profile (see `src/config/schema.ts` for the
+full validation rules).
+
+### `otlp-grpc`
+
+| Option | Default | Purpose |
+|---|---|---|
+| `plaintext` | `true` | when `true`, skip TLS and connect in cleartext; set `false` to require TLS |
+| `timeout` | `"10s"` | per-call timeout |
+| `resource_attributes` | — | key/value pairs attached to the OTLP `Resource` |
+
+**The default is `plaintext: true` — TLS is skipped unless a profile explicitly sets
+`plaintext: false`.** Do not assume a profile that omits this option is encrypted in transit.
+
+### `otlp-http`
+
+| Option | Default | Purpose |
+|---|---|---|
+| `path` | `/v1/logs` | request path appended to `target.endpoint` |
+| `encoding` | `"json"` | **only `"json"` is implemented** — `"protobuf"` is rejected at construction, so a misconfigured profile fails in init rather than at the first send |
+| `headers` | — | extra request headers |
+
+k6 has no protobuf encoder for an HTTP body (unlike gRPC, where k6 compiles the `.proto` files
+itself), so implementing `encoding: "protobuf"` would mean hand-rolling one in JS. That is out of
+scope here — pick an aggregator endpoint that accepts OTLP/HTTP JSON, or use `otlp-grpc` instead.
+
+### `hec`
+
+| Option | Default | Purpose |
+|---|---|---|
+| `path` | `/services/collector/event` | request path appended to `target.endpoint` |
+| `token_env` | `"HEC_TOKEN"` | **names** the environment variable holding the HEC token — the token itself never lives in the profile |
+| `index` | — | optional Splunk index |
+| `sourcetype` | — | optional sourcetype |
+| `gzip` | `false` | compress the request body |
+
+**The container fails at init if the variable named by `token_env` is unset** — that is the
+designed behaviour: a missing credential should be a startup failure, not a run's worth of 401s.
+
+**With `gzip: true`, `summary.json` reports `wire_bytes: null` for this transport's sends.** k6
+compresses the body after handing it a string and does not report the compressed length back, so
+the only number available is the *uncompressed* size — reporting that as the wire size would be
+exactly the confident-wrong-number `SendResult.wire_bytes` exists to prevent.
+
+**The `gzip: true` path is unverified.** It is not covered by the unit suite (nothing that calls
+`k6/http` is), and the live verification run against a real HEC listener used `gzip: false`. Treat
+compressed HEC delivery as untested until it has been exercised against a real listener.
+
+### `syslog`
+
+| Option | Default | Purpose |
+|---|---|---|
+| `rfc` | `5424` | `5424` or `3164` |
+| `framing` | `"octet-counted"` | `"octet-counted"` or `"lf"` |
+| `tls` | `false` | wrap the TCP connection in TLS |
+| `app_name` | `"k6-load-gen"` | RFC APP-NAME / TAG token |
+
+**This transport connects and closes once per `send()` batch — it does not hold a persistent
+socket.** A prior experiment found that a `k6/x/tcp` socket left undestroyed at VU teardown hangs
+the entire k6 process at shutdown (140s+, no summary produced), and this codebase has no per-VU
+teardown hook to call `destroy()` from, so connect-per-batch is the only shape that reliably exits.
+Two consequences follow, and a reader picking a transport should know both before load-testing
+against `syslog`:
+
+- **Throughput is bounded by TCP (and, with `tls: true`, TLS) handshake latency, not by the
+  aggregator's ingest rate.** Its achievable rate is not comparable to the connectionless HTTP
+  transports (`hec`, `otlp-http`) or the connect-once `otlp-grpc` client.
+- **Every closed connection sits in `TIME_WAIT` on the generator host for roughly 60 seconds.** A
+  single generator VU pool against one `host:port` therefore tops out around a few hundred
+  connections/sec — ephemeral source ports run out faster than `TIME_WAIT` clears them. Push past
+  that ceiling and `connect()` itself starts failing, which shows up in the run's metrics looking
+  exactly like a receiver-side problem. See `src/transports/syslog.ts` for the full reasoning.
+
+Because every batch pays a fresh handshake, `syslog`'s `send_duration` threshold is not comparable
+to the other transports' — `otlp-grpc`, `otlp-http` and `hec` measure a request over an
+already-established connection (or, for `otlp-grpc`, a connect-once client), so their per-call
+budgets can be tight. `syslog`'s per-call time includes a TCP handshake and, with `tls: true`, a TLS
+handshake on top of it, so the shipped `profiles/syslog.json` threshold is set looser than the
+HTTP/gRPC transports' to leave room for that — see the profile for the current value.
+
+**Delivery has been verified live; strict-receiver conformance has not.** The live check used `nc`
+listening on a TCP port, which confirms framing and end-to-end delivery but says nothing about
+whether a real syslog daemon would accept the message. Two known conformance gaps sit
+outside what that check can see: the structured-data ID emitted for the `[meta ...]` block does not
+follow RFC 5424 §6.3.2 (which wants `name@<enterprise-number>` for anything carrying custom
+parameters, not a bare `meta`), and no UTF-8 BOM precedes MSG as §6.4 recommends. Neither is fixed
+here, but a reader pointing `syslog` at a strict receiver should know about both before assuming
+conformance.
+
+### `null`
+
+| Option | Default | Purpose |
+|---|---|---|
+| `count_bytes` | `true` | measure `wire_bytes` by summing event body lengths; set `false` to report `wire_bytes: null` instead |
 
 ## Building
 

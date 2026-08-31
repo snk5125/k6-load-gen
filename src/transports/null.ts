@@ -9,10 +9,10 @@ export const createNullTransport: TransportFactory = (cfg) => {
 
   return {
     name: 'null',
-    connect() {
+    async connect() {
       /* nothing to connect */
     },
-    send(events) {
+    async send(events) {
       let bytes = 0;
       if (countBytes) {
         for (let i = 0; i < events.length; i++) bytes += events[i].body.length;
@@ -22,7 +22,7 @@ export const createNullTransport: TransportFactory = (cfg) => {
       // wire_bytes counter as if it had been measured.
       return { ok: true, status: 200, wire_bytes: countBytes ? bytes : null };
     },
-    close() {
+    async close() {
       /* nothing to release */
     },
   };

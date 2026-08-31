@@ -19,9 +19,10 @@ import type { Profile } from './schema.ts';
  * ALLOWLISTED CONTAINER VALUES PASS THROUGH BY REFERENCE. Every entry here
  * is copied whole, so a container's nested contents are published
  * unredacted — this allowlist is one level deep, and any key added to it
- * must be safe all the way down, not just at the top. That is why `tls` was
- * REMOVED (see below), and why `resource_attributes` is the only container
- * that remains.
+ * must be safe all the way down, not just at the top. `resource_attributes`
+ * is the only allowlisted key that is actually a container; `tls` looks like
+ * one in principle but is not one here — see its comment below for why it is
+ * allowlisted anyway.
  */
 export const SAFE_OPTION_KEYS: readonly string[] = [
   // otlp-grpc
@@ -45,13 +46,14 @@ export const SAFE_OPTION_KEYS: readonly string[] = [
   // syslog
   'rfc',
   'framing',
-  // `tls` is deliberately ABSENT. It was allowlisted, and it is a container:
-  // Plan 2's syslog `tls` block is exactly where a client key, a certificate,
-  // or a passphrase would be written, and a shallow allowlist would have
-  // published all of it to S3 in cleartext. Nothing reads it today, so
-  // dropping it fails safe at zero cost. If Plan 2 needs specific TLS
-  // settings in the artifact, allowlist the scalar leaves it actually needs
-  // (e.g. `tls_verify`) — never the block.
+  // `tls` is allowlisted ONLY because src/config/schema.ts constrains it to a
+  // strict boolean for the syslog transport (a non-boolean `tls` fails
+  // validation before a profile ever reaches this list) — a boolean is safe
+  // all the way down, so there is no nested container to leak. If `tls` is
+  // ever loosened back into an object (a key, a certificate, a passphrase),
+  // this key must come back off the list; do not assume the safety carries
+  // over.
+  'tls',
   'app_name',
   // null
   'count_bytes',

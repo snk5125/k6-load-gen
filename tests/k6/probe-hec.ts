@@ -6,15 +6,14 @@ export const options = { vus: 1, iterations: 1 };
 // default function: a throw here aborts the run with a non-zero exit code
 // (k6 init-context error), whereas a throw inside the default function is
 // treated as an iteration error and does NOT fail the run's exit code. A
-// probe that can't fail proves nothing.
-const t = createTransport('otlp-grpc', {
-  endpoint: '127.0.0.1:4317',
-  options: { plaintext: true },
+// probe that can't fail proves nothing — and that matters here specifically,
+// because the whole point of this probe is to prove that a missing
+// HEC_TOKEN fails loudly.
+const t = createTransport('hec', {
+  endpoint: 'https://example.com:8088',
+  options: {},
 });
-console.log('TRANSPORT_INIT_OK ' + t.name);
-
-const n = createTransport('null', {});
-console.log('NULL_INIT_OK ' + n.name);
+console.log('HEC_INIT_OK ' + t.name);
 
 export default function () {
   /* construction already verified above, in init context */

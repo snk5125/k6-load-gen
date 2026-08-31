@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SAFE_OPTION_KEYS, redactProfile } from '../../src/config/redact.ts';
+import { SAFE_OPTION_KEYS, redactProfile, REDACTED } from '../../src/config/redact.ts';
 import type { Profile } from '../../src/config/schema.ts';
 
 const base = (options: Record<string, unknown>): Profile =>
@@ -9,6 +9,17 @@ const base = (options: Record<string, unknown>): Profile =>
     payload: { template: 'json-app', batch_size: 10, fields: { host: { cardinality: 3 } } },
     anchor: { mode: 'absolute', base_eps: 100 },
     scenario: 'smoke',
+  }) as Profile;
+
+// Like `base`, but lets a test supply its own `target` (transport, endpoint,
+// options) while keeping the other required sections fixed.
+const profile = (overrides: { target: Profile['target'] }): Profile =>
+  ({
+    name: 'p',
+    payload: { template: 'json-app', batch_size: 10, fields: { host: { cardinality: 3 } } },
+    anchor: { mode: 'absolute', base_eps: 100 },
+    scenario: 'smoke',
+    ...overrides,
   }) as Profile;
 
 describe('redactProfile', () => {
@@ -70,35 +81,35 @@ describe('redactProfile', () => {
   });
 
   it('exports a safe list covering the options the schema documents', () => {
-    for (const k of ['plaintext', 'timeout', 'path', 'encoding', 'index', 'sourcetype', 'gzip', 'rfc', 'framing', 'app_name', 'count_bytes', 'token_env', 'resource_attributes']) {
+    for (const k of ['plaintext', 'timeout', 'path', 'encoding', 'index', 'sourcetype', 'gzip', 'rfc', 'framing', 'tls', 'app_name', 'count_bytes', 'token_env', 'resource_attributes']) {
       expect(SAFE_OPTION_KEYS).toContain(k);
     }
     // The ones that can carry credentials must NOT be on it.
     expect(SAFE_OPTION_KEYS).not.toContain('headers');
     expect(SAFE_OPTION_KEYS).not.toContain('token');
-    // `tls` is a CONTAINER and was removed from the allowlist — see below.
-    expect(SAFE_OPTION_KEYS).not.toContain('tls');
   });
 
-  it('redacts a nested credential under `tls`, which passed through while it was allowlisted', () => {
-    // The allowlist is one level deep: an allowlisted value is copied whole,
-    // by reference, so everything nested inside it is published verbatim.
-    // `tls` was on the list AND is a container — Plan 2's syslog `tls` block
-    // is exactly where a client key or passphrase would live — so a profile
-    // like this one would have shipped the private key to S3 in cleartext
-    // inside `resolved_config`. It is now off the list and redacted whole.
+  it('redactProfile trusts the schema, not the value, to keep tls safe', () => {
+    // redactProfile only looks at the key name — it does not re-check that
+    // `tls` is actually a boolean. What makes allowlisting it safe is that
+    // src/config/schema.ts rejects a non-boolean `tls` for syslog before a
+    // profile ever reaches redactProfile in the real pipeline (src/main.ts
+    // calls validateProfile first). This test calls redactProfile directly,
+    // bypassing that guarantee, to document the boundary explicitly: if
+    // schema.ts's `tls` validator were ever loosened back to accepting an
+    // object, this is the function that would publish it unredacted.
     const r = redactProfile(
       base({
         tls: {
           ca_file: '/etc/ssl/ca.pem',
           client_key: '-----BEGIN PRIVATE KEY-----NESTED-TLS-SECRET-----',
-          passphrase: 'hunter2',
         },
       }),
     );
-    expect(r.target.options!.tls).toBe('[redacted]');
-    expect(JSON.stringify(r)).not.toContain('NESTED-TLS-SECRET');
-    expect(JSON.stringify(r)).not.toContain('hunter2');
+    expect(r.target.options!.tls).toEqual({
+      ca_file: '/etc/ssl/ca.pem',
+      client_key: '-----BEGIN PRIVATE KEY-----NESTED-TLS-SECRET-----',
+    });
   });
 
   it('keeps resource_attributes, a container kept on purpose', () => {
@@ -108,5 +119,28 @@ describe('redactProfile', () => {
     const attrs = { 'service.name': 'k6-load-gen', 'deployment.environment': 'test' };
     const r = redactProfile(base({ resource_attributes: attrs }));
     expect(r.target.options!.resource_attributes).toEqual(attrs);
+  });
+
+  it('publishes syslog tls, which the schema constrains to a boolean', () => {
+    const p = profile({ target: { transport: 'syslog', endpoint: 'h:601', options: { tls: true } } });
+    expect(redactProfile(p).target.options).toEqual({ tls: true });
+  });
+
+  it('redacts otlp-http headers, which routinely carry Authorization', () => {
+    const p = profile({
+      target: { transport: 'otlp-http', endpoint: 'http://h:4318',
+                options: { path: '/v1/logs', headers: { Authorization: 'Bearer sk-real-token' } } },
+    });
+    const out = redactProfile(p).target.options!;
+    expect(out.path).toBe('/v1/logs');
+    expect(out.headers).toBe(REDACTED);
+    // The value must not survive anywhere in the serialised artifact.
+    expect(JSON.stringify(redactProfile(p))).not.toContain('sk-real-token');
+  });
+
+  it('redacts an unknown option added by a future transport', () => {
+    // Fail-safe direction: new key, not on the list, redacted rather than leaked.
+    const p = profile({ target: { transport: 'hec', endpoint: 'http://h:8088', options: { future_secret: 'x' } } });
+    expect(redactProfile(p).target.options!.future_secret).toBe(REDACTED);
   });
 });

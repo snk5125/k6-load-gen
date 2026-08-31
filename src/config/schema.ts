@@ -1,16 +1,13 @@
+import { TEMPLATES } from '../payload/generator.ts';
 import type { PayloadSpec } from '../payload/types.ts';
 import type { Anchor } from '../scenarios/resolve.ts';
 import { SHAPE_NAMES, type ShapeName } from '../scenarios/shapes.ts';
+import { TRANSPORT_NAMES, type TransportName } from '../transports/names.ts';
 
-export type TransportName = 'otlp-grpc' | 'otlp-http' | 'hec' | 'syslog' | 'null';
-
-export const TRANSPORT_NAMES: TransportName[] = [
-  'otlp-grpc',
-  'otlp-http',
-  'hec',
-  'syslog',
-  'null',
-];
+// Re-exported (not just imported) because other modules and tests still
+// import TransportName/TRANSPORT_NAMES from schema.ts — src/transports/names.ts
+// is the single source, schema.ts just forwards it for backward compatibility.
+export { TRANSPORT_NAMES, type TransportName };
 
 export interface TargetSpec {
   transport: TransportName;
@@ -38,6 +35,102 @@ const isObject = (v: unknown): v is Record<string, unknown> =>
 
 const isPositiveInt = (v: unknown): v is number =>
   typeof v === 'number' && Number.isInteger(v) && v > 0;
+
+// Per-transport option specs — spec §6.1's option tables are the source of
+// truth. Each key names the shape its value must take so a typo'd key or a
+// wrong-typed value is caught at validation time instead of at runtime.
+type OptionSpec =
+  | { kind: 'boolean' }
+  | { kind: 'string' }
+  | { kind: 'string-enum'; values: string[] }
+  | { kind: 'number-enum'; values: number[] }
+  | { kind: 'object' };
+
+const TRANSPORT_OPTION_SPECS: Record<TransportName, Record<string, OptionSpec>> = {
+  'otlp-grpc': {
+    plaintext: { kind: 'boolean' },
+    timeout: { kind: 'string' },
+    resource_attributes: { kind: 'object' },
+  },
+  'otlp-http': {
+    path: { kind: 'string' },
+    encoding: { kind: 'string-enum', values: ['protobuf', 'json'] },
+    headers: { kind: 'object' },
+  },
+  hec: {
+    path: { kind: 'string' },
+    token_env: { kind: 'string' },
+    index: { kind: 'string' },
+    sourcetype: { kind: 'string' },
+    gzip: { kind: 'boolean' },
+  },
+  syslog: {
+    rfc: { kind: 'number-enum', values: [5424, 3164] },
+    framing: { kind: 'string-enum', values: ['octet-counted', 'lf'] },
+    tls: { kind: 'boolean' },
+    app_name: { kind: 'string' },
+  },
+  null: {
+    count_bytes: { kind: 'boolean' },
+  },
+};
+
+function optionMatchesSpec(v: unknown, spec: OptionSpec): boolean {
+  switch (spec.kind) {
+    case 'boolean':
+      return typeof v === 'boolean';
+    case 'string':
+      return typeof v === 'string';
+    case 'string-enum':
+      return typeof v === 'string' && spec.values.includes(v);
+    case 'number-enum':
+      return typeof v === 'number' && spec.values.includes(v);
+    case 'object':
+      return isObject(v);
+  }
+}
+
+function describeOptionSpec(spec: OptionSpec): string {
+  switch (spec.kind) {
+    case 'boolean':
+      return 'a boolean';
+    case 'string':
+      return 'a string';
+    case 'string-enum':
+      return `one of ${spec.values.join(', ')}`;
+    case 'number-enum':
+      return `one of ${spec.values.join(', ')}`;
+    case 'object':
+      return 'an object';
+  }
+}
+
+function validateTransportOptions(
+  transport: TransportName,
+  options: Record<string, unknown>,
+  errors: string[],
+): void {
+  const spec = TRANSPORT_OPTION_SPECS[transport];
+  const validKeys = Object.keys(spec);
+  for (const [key, value] of Object.entries(options)) {
+    // hasOwnProperty guard, same as the TEMPLATES lookup below: an unguarded
+    // `spec[key]` walks the prototype chain, so `{"constructor": true}` (or
+    // any other Object.prototype member name) resolves to a function
+    // instead of undefined. The profile is still rejected either way — but
+    // without this guard it fails with the misleading `must be undefined`
+    // message instead of the intended unknown-option message.
+    const keySpec = Object.prototype.hasOwnProperty.call(spec, key) ? spec[key] : undefined;
+    if (!keySpec) {
+      errors.push(
+        `target.options.${key}: unknown option for transport "${transport}"; valid options: ${validKeys.join(', ')}`,
+      );
+      continue;
+    }
+    if (!optionMatchesSpec(value, keySpec)) {
+      errors.push(`target.options.${key}: must be ${describeOptionSpec(keySpec)}`);
+    }
+  }
+}
 
 function validateFieldSpec(name: string, v: unknown, errors: string[]): void {
   if (!isObject(v)) {
@@ -135,15 +228,20 @@ export function validateProfile(raw: unknown): ValidationResult {
     errors.push('target: must be an object');
   } else {
     const t = raw.target;
-    if (!TRANSPORT_NAMES.includes(t.transport as TransportName)) {
+    const transportValid = TRANSPORT_NAMES.includes(t.transport as TransportName);
+    if (!transportValid) {
       errors.push(`target.transport: must be one of ${TRANSPORT_NAMES.join(', ')}`);
     } else if (t.transport !== 'null') {
       if (typeof t.endpoint !== 'string' || t.endpoint.length === 0) {
         errors.push(`target.endpoint: required for transport "${String(t.transport)}"`);
       }
     }
-    if ('options' in t && t.options !== undefined && !isObject(t.options)) {
-      errors.push('target.options: must be an object');
+    if ('options' in t && t.options !== undefined) {
+      if (!isObject(t.options)) {
+        errors.push('target.options: must be an object');
+      } else if (transportValid) {
+        validateTransportOptions(t.transport as TransportName, t.options, errors);
+      }
     }
   }
 
@@ -154,6 +252,10 @@ export function validateProfile(raw: unknown): ValidationResult {
     const p = raw.payload;
     if (typeof p.template !== 'string' || p.template.length === 0) {
       errors.push('payload.template: must be a non-empty string');
+    } else if (!Object.prototype.hasOwnProperty.call(TEMPLATES, p.template)) {
+      errors.push(
+        `payload.template: must be one of ${Object.keys(TEMPLATES).join(', ')}`,
+      );
     }
     if (!isPositiveInt(p.batch_size)) {
       errors.push('payload.batch_size: must be a positive integer');

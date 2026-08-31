@@ -1,6 +1,6 @@
 import grpc from 'k6/net/grpc';
 import type { SendResult, TransportFactory } from './types.ts';
-import type { LogEvent } from '../payload/types.ts';
+import { buildResourceLogs } from './otlp-payload.ts';
 
 const PROTO_ROOT = __ENV.PROTO_ROOT || '/protos';
 const EXPORT_METHOD = 'opentelemetry.proto.collector.logs.v1.LogsService/Export';
@@ -13,40 +13,6 @@ const EXPORT_METHOD = 'opentelemetry.proto.collector.logs.v1.LogsService/Export'
 const client = new grpc.Client();
 client.load([PROTO_ROOT], 'opentelemetry/proto/collector/logs/v1/logs_service.proto');
 
-const SEVERITY_NUMBER: Record<string, number> = {
-  TRACE: 1, DEBUG: 5, INFO: 9, WARN: 13, ERROR: 17, FATAL: 21,
-};
-
-function toLogRecord(e: LogEvent) {
-  const attributes: Array<Record<string, unknown>> = [
-    { key: 'run_id', value: { stringValue: e.run_id } },
-    { key: 'gen_index', value: { intValue: String(e.gen_index) } },
-    { key: 'seq', value: { intValue: String(e.seq) } },
-  ];
-  // Attributes carry IDENTITY ONLY; the generated fields travel in the body.
-  //
-  // Copying every field into attributes as well would put each value on the
-  // wire twice — once here, once inside the JSON body — roughly doubling event
-  // size and making `pad_to` mean half what it says. It would also make this
-  // transport incomparable with HEC and syslog, which have no attributes
-  // sidecar: the same profile would produce materially different wire volume
-  // per transport, so a knee measured over gRPC could not be compared with one
-  // measured over HEC.
-  //
-  // Making the aggregator parse the body to see the fields is the point — that
-  // parse cost is what the payload cardinality controls exist to exercise.
-  //
-  // run_id/gen_index/seq stay as attributes because the delivery-correctness
-  // layer needs to match events without parsing every body.
-  return {
-    timeUnixNano: String(e.ts_ms) + '000000',
-    severityNumber: SEVERITY_NUMBER[e.severity] ?? 9,
-    severityText: e.severity,
-    body: { stringValue: e.body },
-    attributes,
-  };
-}
-
 export const createOtlpGrpcTransport: TransportFactory = (cfg) => {
   const endpoint = cfg.endpoint;
   if (!endpoint) throw new Error('otlp-grpc transport requires target.endpoint (host:port, no scheme)');
@@ -54,14 +20,7 @@ export const createOtlpGrpcTransport: TransportFactory = (cfg) => {
   const opts = cfg.options ?? {};
   const plaintext = opts.plaintext !== false;
   const timeout = (opts.timeout as string | undefined) ?? '10s';
-
-  const resourceAttrs: Array<Record<string, unknown>> = [
-    { key: 'service.name', value: { stringValue: 'k6-load-gen' } },
-  ];
-  const extra = (opts.resource_attributes as Record<string, string> | undefined) ?? {};
-  for (const k of Object.keys(extra)) {
-    resourceAttrs.push({ key: k, value: { stringValue: extra[k] } });
-  }
+  const resourceAttributes = opts.resource_attributes as Record<string, string> | undefined;
 
   function closeClient() {
     try {
@@ -71,25 +30,31 @@ export const createOtlpGrpcTransport: TransportFactory = (cfg) => {
     }
   }
 
+  let connectFailed = false;
+  let connectError = '';
+
   return {
     name: 'otlp-grpc',
 
-    connect() {
+    async connect() {
       // One connection per VU: an NLB pins flows per connection.
-      client.connect(endpoint, { plaintext, timeout });
+      try {
+        client.connect(endpoint, { plaintext, timeout });
+        connectFailed = false;
+      } catch (err) {
+        // Recorded, not thrown: an unguarded throw here aborts the iteration
+        // before send() can report the failure through the normal counters.
+        connectFailed = true;
+        connectError = String(err);
+      }
     },
 
-    send(events, _ctx): SendResult {
+    async send(events, _ctx): Promise<SendResult> {
+      if (connectFailed) {
+        return { ok: false, status: 'connect-failed', wire_bytes: null, error: connectError };
+      }
       try {
-        const payload = {
-          resourceLogs: [
-            {
-              resource: { attributes: resourceAttrs },
-              scopeLogs: [{ scope: { name: 'k6-load-gen' }, logRecords: events.map(toLogRecord) }],
-            },
-          ],
-        };
-
+        const payload = buildResourceLogs(events, resourceAttributes);
         const res = client.invoke(EXPORT_METHOD, payload, { timeout });
         if (res && res.status === grpc.StatusOK) {
           // k6 does not expose the encoded protobuf size; reporting a
@@ -113,7 +78,7 @@ export const createOtlpGrpcTransport: TransportFactory = (cfg) => {
       }
     },
 
-    close() {
+    async close() {
       closeClient();
     },
   };

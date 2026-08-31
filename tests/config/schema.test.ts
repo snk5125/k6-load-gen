@@ -133,3 +133,94 @@ describe('validateProfile', () => {
     expect(r.errors.some((e) => e.includes('pad_to'))).toBe(true);
   });
 });
+
+describe('validateProfile — per-transport option validation', () => {
+  it('rejects an option key the transport does not accept', () => {
+    // The typo case this exists for: plaintxt silently did nothing before.
+    const r = validateProfile({ ...valid, target: { transport: 'otlp-grpc', endpoint: 'a:4317', options: { plaintxt: true } } });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/plaintxt/);
+  });
+
+  it('names the accepted keys so the operator can see the typo', () => {
+    const r = validateProfile({ ...valid, target: { transport: 'otlp-grpc', endpoint: 'a:4317', options: { plaintxt: true } } });
+    expect(r.errors.join(' ')).toMatch(/plaintext/);
+  });
+
+  it('rejects a string where a boolean belongs', () => {
+    const r = validateProfile({ ...valid, target: { transport: 'otlp-grpc', endpoint: 'a:4317', options: { plaintext: 'true' } } });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/plaintext/);
+  });
+
+  it('rejects an out-of-range enum', () => {
+    const r = validateProfile({ ...valid, target: { transport: 'syslog', endpoint: 'a:514', options: { rfc: 9999 } } });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/rfc/);
+  });
+
+  it('rejects a non-boolean value for syslog tls — this guarantee is load-bearing for run-summary publication', () => {
+    // tls must stay a strict boolean: a later task allowlists tls for
+    // publication into the run summary specifically because this validator
+    // guarantees it can never be an object. If an object like a private key
+    // ever slipped through here, it would get published to object storage.
+    const r = validateProfile({ ...valid, target: { transport: 'syslog', endpoint: 'a:514', options: { tls: { key: 'x' } } } });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/tls/);
+  });
+
+  it('accepts every option the spec documents for each transport', () => {
+    const cases: Array<[string, string | undefined, Record<string, unknown>]> = [
+      ['otlp-grpc', 'a:4317', { plaintext: true, timeout: '10s', resource_attributes: { 'service.name': 'x' } }],
+      ['otlp-http', 'https://a/v1/logs', { path: '/v1/logs', encoding: 'json', headers: { 'X-A': 'b' } }],
+      ['hec', 'https://a:8088', { path: '/services/collector/event', token_env: 'HEC_TOKEN', index: 'main', sourcetype: 'x', gzip: true }],
+      ['syslog', 'a:514', { rfc: 5424, framing: 'octet-counted', tls: false, app_name: 'k6' }],
+      ['null', undefined, { count_bytes: false }],
+    ];
+    for (const [transport, endpoint, options] of cases) {
+      const target: Record<string, unknown> = { transport, options };
+      if (endpoint) target.endpoint = endpoint;
+      const r = validateProfile({ ...valid, target });
+      expect(r.errors, `${transport}: ${r.errors.join('; ')}`).toEqual([]);
+    }
+  });
+
+  it('rejects an unknown template name and lists the known ones', () => {
+    const r = validateProfile({ ...valid, payload: { ...valid.payload, template: 'nope' } });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/template/);
+    expect(r.errors.join(' ')).toMatch(/json-app/);
+  });
+
+  it('rejects an inherited Object.prototype key as a template name, not just a missing own key', () => {
+    // TEMPLATES is a plain object literal, so a naive `in` check would let
+    // "constructor", "toString", etc. through as if they were real
+    // templates. Assert it is rejected for the right reason: the error
+    // names the bogus value as an unknown template, the same way "nope" is.
+    const r = validateProfile({ ...valid, payload: { ...valid.payload, template: 'constructor' } });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/payload\.template.*must be one of.*json-app/);
+  });
+
+  it('collects an option error alongside other errors rather than short-circuiting', () => {
+    const r = validateProfile({ ...valid, name: 42, target: { transport: 'otlp-grpc', endpoint: 'a:4317', options: { plaintxt: true } } });
+    expect(r.errors.length).toBeGreaterThan(1);
+  });
+
+  it('rejects an inherited Object.prototype key as a transport option, with the unknown-option message', () => {
+    // Same class of bug as the TEMPLATES lookup above, in the transport
+    // option spec instead: an unguarded `spec[key]` walks the prototype
+    // chain, so `{"constructor": true}` resolves to Object's constructor
+    // function rather than undefined. The profile was still correctly
+    // REJECTED either way (optionMatchesSpec fails on a function value) —
+    // but with the wrong message: "must be undefined" instead of naming
+    // "constructor" as an unknown option. Assert the intended message, not
+    // just rejection, so a regression to the misleading message is caught.
+    const r = validateProfile({
+      ...valid,
+      target: { transport: 'otlp-grpc', endpoint: 'a:4317', options: { constructor: true } },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/target\.options\.constructor.*unknown option/);
+  });
+});
