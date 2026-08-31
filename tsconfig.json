@@ -34,5 +34,11 @@
   // probe script (`k6 run tests/k6/probe-transport-init.ts`), not a vitest
   // suite, so it belongs under k6-only types same as src/main.ts.
   "include": ["src/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["src/timeline/cli.ts", "src/storage/index-cli.ts", "src/aggregator/cli.ts", "tests/**/*.test.ts"]
+  "exclude": [
+    "src/timeline/cli.ts",
+    "src/storage/index-cli.ts",
+    "src/aggregator/cli.ts",
+    "tests/**/*.test.ts",
+    "tests/aggregator/roundtrip/main.ts"
+  ]
 }

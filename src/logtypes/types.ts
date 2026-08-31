@@ -7,7 +7,20 @@ export interface LogTypeField {
   spec: FieldSpec;
   /** Nested formats only: dotted path, e.g. 'userIdentity.arn'. Defaults to `name`. */
   path?: string;
-  /** Consumed by Sub-project B's renderers. Absent means { type: 'string', index: false }. */
+  /**
+   * Consumed by Sub-project B, split across two different places — the two
+   * halves of `parse` do NOT share a consumer. `type` drives the
+   * renderers' own per-field coercions: Vector's `to_int!`/`to_timestamp!`
+   * (src/aggregator/vector.ts) and Cribl's `Number()`/`Date.parse()` eval
+   * entries (src/aggregator/cribl.ts). `index` drives none of that — no
+   * vendor's transform stage exposes per-field indexing, so a renderer has
+   * nothing to do with it. `index` instead drives the *sink* wrapped
+   * around the rendered transform: Vector's `splunk_hec_logs` sink's
+   * `indexed_fields` (built by tests/aggregator/roundtrip's harness, from
+   * `fields.filter(f => f.parse?.index)`) and, for Cribl, the Splunk
+   * destination's indexed-fields list checked manually per
+   * aggregator-configs/README.md. Absent means { type: 'string', index: false }.
+   */
   parse?: { type: 'string' | 'int' | 'timestamp' | 'ip'; index?: boolean };
 }
 
