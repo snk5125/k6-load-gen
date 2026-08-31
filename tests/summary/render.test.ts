@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildSummary } from '../../src/summary/build.ts';
+import { buildSummary, formatSubMetricKey } from '../../src/summary/build.ts';
 import { renderSummary } from '../../src/summary/render.ts';
 import { buildThresholds, STRUCTURAL_EXPRESSIONS } from '../../src/metrics/thresholds.ts';
 
@@ -22,7 +22,7 @@ const base = {
 function structuralMetricsFor(type: string): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [metric, expr] of Object.entries(STRUCTURAL_EXPRESSIONS)) {
-    out[`${metric}{scenario:${type}}`] = {
+    out[formatSubMetricKey(metric, type)] = {
       thresholds: { [expr]: { ok: true } },
       values: metric === 'send_duration' ? { avg: 5, med: 4, 'p(95)': 9, 'p(99)': 12, max: 20 } : { count: 10, rate: 0 },
     };

@@ -1,3 +1,5 @@
+import { formatSubMetricKey } from '../summary/build.ts';
+
 export type ThresholdEntry =
   | string
   | { threshold: string; abortOnFail: true; delayAbortEval: string };
@@ -124,7 +126,7 @@ export function buildThresholds(input: ThresholdInput): Record<string, Threshold
   const generatedKeys = new Set<string>();
   for (const type of input.active_types ?? []) {
     for (const [metric, expr] of Object.entries(STRUCTURAL_EXPRESSIONS)) {
-      const key = `${metric}{scenario:${type}}`;
+      const key = formatSubMetricKey(metric, type);
       if (key in out) continue;
       out[key] = [expr];
       generatedKeys.add(key);

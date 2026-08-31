@@ -33,11 +33,15 @@ function parseSubMetricKey(name: string): { metric: string; type: string } | nul
 /**
  * The inverse of `parseSubMetricKey`: builds a tagged sub-metric key from a
  * metric name and a type. Kept next to `SUB_METRIC_KEY_RE` so the
- * `{scenario:<type>}` shape has exactly one source of truth in this file —
- * a change to the tag format only ever needs updating here and in the
- * regex above, not at each call site that currently needs a tagged key.
+ * `{scenario:<type>}` shape has exactly one source of truth in the whole
+ * codebase — a change to the tag format only ever needs updating here and
+ * in the regex above, not at each call site that currently needs a tagged
+ * key. Exported (rather than re-derived) because src/metrics/thresholds.ts
+ * — the module that GENERATES these keys — and any test that needs to
+ * build one both used to hand-roll the same template string separately;
+ * this is the single source both now go through instead.
  */
-function formatSubMetricKey(metric: string, type: string): string {
+export function formatSubMetricKey(metric: string, type: string): string {
   return `${metric}{scenario:${type}}`;
 }
 
