@@ -148,7 +148,24 @@ function buildTypeSummary(metrics: Record<string, unknown>, type: string): TypeS
       continue;
     }
     const scalarKey = SCALAR_FIELD[metric];
-    out[metric] = scalarKey ? (raw.values[scalarKey] ?? null) : { ...raw.values };
+    // wire_bytes is special: main.ts only ever calls wireBytes.add() with a
+    // non-null, positive byte count (see the res.wire_bytes !== null guard),
+    // so this Counter can only ever be incremented by a real observation. A
+    // structural threshold (STRUCTURAL_EXPRESSIONS) still materialises the
+    // tagged sub-metric even when every send on this type returned
+    // wire_bytes: null (otlp-grpc always does; hec does under gzip:true) —
+    // it then arrives here PRESENT with count: 0, which looks exactly like
+    // "measured as none" but actually means "never observable this run".
+    // count === 0 for this one metric can only mean the latter, so report it
+    // as null rather than let a real multi-megabyte transfer publish 0 — the
+    // exact substitution the `wire_bytes: number | null` contract (see
+    // src/transports/types.ts) exists to prevent.
+    out[metric] =
+      metric === 'wire_bytes' && raw.values.count === 0
+        ? null
+        : scalarKey
+          ? (raw.values[scalarKey] ?? null)
+          : { ...raw.values };
   }
   return out as unknown as TypeSummary;
 }

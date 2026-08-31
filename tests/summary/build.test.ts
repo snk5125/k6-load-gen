@@ -225,6 +225,50 @@ describe('buildSummary per-type breakdown', () => {
     expect(s.types.auditd.events_sent).toBe(0);
   });
 
+  // CRITICAL: otlp-grpc reports wire_bytes: null on every send (k6 does not
+  // expose encoded protobuf size), and hec does the same under gzip: true —
+  // yet the structural threshold on wire_bytes{scenario:<type>} still
+  // materialises the sub-metric, arriving here PRESENT with count: 0. That
+  // is indistinguishable, by shape, from "measured as none" for every other
+  // metric — but for wire_bytes specifically, main.ts only ever adds a
+  // non-null, positive value (see the res.wire_bytes !== null guard around
+  // wireBytes.add), so a real run that transmitted hundreds of megabytes
+  // over otlp-grpc must not publish wire_bytes: 0. See src/summary/build.ts.
+  it('reports null, not zero, for wire_bytes when the sub-metric is present but genuinely unobservable', () => {
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: {
+        'wire_bytes{scenario:auditd}': { values: { count: 0 } },
+      },
+    });
+    expect(s.types.auditd.wire_bytes).toBeNull();
+  });
+
+  it('still reports a real zero for every OTHER structural metric, only wire_bytes gets the null override', () => {
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: {
+        'events_sent{scenario:auditd}': { values: { count: 0 } },
+        'wire_bytes{scenario:auditd}': { values: { count: 0 } },
+      },
+    });
+    expect(s.types.auditd.events_sent).toBe(0);
+    expect(s.types.auditd.wire_bytes).toBeNull();
+  });
+
+  it('still reports a genuine non-zero wire_bytes count when the transport actually measured it', () => {
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: {
+        'wire_bytes{scenario:auditd}': { values: { count: 48213 } },
+      },
+    });
+    expect(s.types.auditd.wire_bytes).toBe(48213);
+  });
+
   it('separates structural thresholds from SLO thresholds', () => {
     // The structural key set is populated as a side effect of buildThresholds;
     // reproduce that here the way the real runtime does before handleSummary runs.
