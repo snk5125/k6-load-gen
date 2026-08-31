@@ -17,8 +17,16 @@ or directly:
 npx tsx tests/aggregator/roundtrip/main.ts
 ```
 
-**Requires Docker, running locally, with network access to pull `timberio/vector:latest-alpine`
+**Requires Docker, running locally, with network access to pull `timberio/vector:0.58.0-alpine`
 the first time** (already pulled in this environment). Exits non-zero if any type fails.
+
+The image is pinned to a concrete tag, not the floating `latest-alpine` — "verified live" names
+no artifact when the tag it ran against can silently become a different image tomorrow (see
+`VECTOR_IMAGE` in `main.ts`). Every run prints the resolved version it actually ran against
+(`docker run --rm <image> --version`) as the first output line, the same way
+`aggregator-configs/README.md`'s manual Cribl check records a Cribl version per entry in its
+Verification log — this harness's analogue is one version line per run rather than a persistent
+table, since every run uses the same pinned image.
 
 ## This is NOT part of `npm test`
 

@@ -24,7 +24,13 @@ import type { LogTypeDef, LogTypeField } from '../../../src/logtypes/types.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const CONFIGS_ROOT = join(REPO_ROOT, 'aggregator-configs');
-const VECTOR_IMAGE = 'timberio/vector:latest-alpine';
+// Pinned to a concrete tag, not the floating `latest-alpine` — "verified
+// live" names no artifact when the tag it ran against can silently become a
+// different image tomorrow. Bump deliberately, and update the version this
+// harness records (below) and aggregator-configs/README.md's own Vector
+// version note together (whole-branch review, promoted minor:
+// tests/aggregator/roundtrip/main.ts:27).
+const VECTOR_IMAGE = 'timberio/vector:0.58.0-alpine';
 const BATCH_SIZE = 20;
 const DOCKER_TIMEOUT_MS = 60_000;
 
@@ -42,6 +48,7 @@ interface TypeResult {
   fieldsDeclared: number;
   fieldsExtracted: number;
   failures: FieldFailure[];
+  rawTransformOk: boolean;
   rawTransformNote: string;
   wrappedValidateOk: boolean;
   wrappedValidateOutput: string;
@@ -130,6 +137,25 @@ function toContainerPath(hostPath: string): string {
   return `/data/${hostPath.slice('/tmp/'.length)}`;
 }
 
+/**
+ * Records the concrete Vector version the pinned image actually runs — the
+ * same "which version did this check run against" record
+ * aggregator-configs/README.md's manual Cribl log keeps (its "Cribl
+ * version" column). Run once per invocation, not once per type: the image
+ * is the same for every type, so a `docker run --version` per type would
+ * only add noise.
+ */
+function getVectorVersion(): string {
+  const res = spawnSync('docker', ['run', '--rm', VECTOR_IMAGE, '--version'], {
+    encoding: 'utf8',
+    timeout: DOCKER_TIMEOUT_MS,
+  });
+  if (res.error || res.status !== 0) {
+    throw new Error(`could not determine ${VECTOR_IMAGE}'s version: ${res.stderr ?? res.error}`);
+  }
+  return res.stdout.trim();
+}
+
 function runDocker(args: string[]): { code: number | null; stdout: string; stderr: string; timedOut: boolean } {
   const res = spawnSync('docker', args, { encoding: 'utf8', timeout: DOCKER_TIMEOUT_MS });
   if (res.error) {
@@ -178,7 +204,13 @@ function runOneType(def: LogTypeDef): TypeResult {
     'validate', '--no-environment', `/cfg/${def.name}/vector/transform.json`,
   ]);
   const rawCheckOutput = rawCheck.stdout + rawCheck.stderr;
-  const rawTransformNote = rawCheck.code === 78 && /No sources defined|No sinks defined/.test(rawCheckOutput)
+  // rawTransformOk drives the pass/fail verdict; rawTransformNote is only
+  // ever the human-readable half — the two used to diverge (this note
+  // printed "unexpected result" while `pass` stayed true, since main()
+  // never looked at it — whole-branch review, promoted minor:
+  // tests/aggregator/roundtrip/main.ts:181-183 / :275-278).
+  const rawTransformOk = rawCheck.code === 78 && /No sources defined|No sinks defined/.test(rawCheckOutput);
+  const rawTransformNote = rawTransformOk
     ? 'accepted as JSON; rejected only for missing source/sink (expected — it is a fragment)'
     : `unexpected result (exit ${rawCheck.code}): ${rawCheckOutput.trim().slice(0, 300)}`;
 
@@ -234,6 +266,7 @@ function runOneType(def: LogTypeDef): TypeResult {
     fieldsDeclared: def.fields.length,
     fieldsExtracted,
     failures,
+    rawTransformOk,
     rawTransformNote,
     wrappedValidateOk,
     wrappedValidateOutput: (validateCheck.stdout + validateCheck.stderr).trim(),
@@ -251,6 +284,9 @@ function main(): void {
     console.error('docker is required (and must be running) for the containerised round trip. See README.md.');
     process.exit(1);
   }
+
+  const vectorVersion = getVectorVersion();
+  console.log(`Vector image: ${VECTOR_IMAGE} (${vectorVersion})`);
 
   const results: TypeResult[] = [];
   for (const def of Object.values(LOG_TYPES)) {
@@ -275,7 +311,8 @@ function main(): void {
     const pass =
       r.eventsIn === r.eventsParsed &&
       r.fieldsExtracted === r.fieldsDeclared &&
-      r.wrappedValidateOk;
+      r.wrappedValidateOk &&
+      r.rawTransformOk;
     if (!pass) anyFail = true;
     console.log(
       `${pad(r.type, 14)} ${pad(String(r.eventsIn), 10)} ${pad(String(r.eventsParsed), 8)} ` +
