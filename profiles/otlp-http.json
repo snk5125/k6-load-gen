@@ -5,19 +5,13 @@
     "endpoint": "http://collector.example:4318",
     "options": { "path": "/v1/logs", "encoding": "json" }
   },
-  "payload": {
-    "template": "json-app",
-    "batch_size": 100,
-    "fields": {
-      "host": { "cardinality": 500, "distribution": "zipf" },
-      "service": { "cardinality": 20 },
-      "level": { "values": ["INFO", "WARN", "ERROR"], "weights": [0.8, 0.15, 0.05] },
-      "trace_id": { "cardinality": "unbounded" },
-      "message": { "cardinality": 50, "pad_to": 512 }
+  "types": {
+    "json-app": {
+      "batch_size": 100,
+      "anchor": { "mode": "knee", "knee_eps": 5000 },
+      "scenario": "sweep"
     }
   },
-  "anchor": { "mode": "knee", "knee_eps": 5000 },
-  "scenario": "sweep",
   "emit_timeline": true,
   "thresholds": { "send_failures": "rate<0.001", "send_duration": "p(99)<250" }
 }

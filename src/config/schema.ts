@@ -1,8 +1,7 @@
-import { TEMPLATES } from '../payload/generator.ts';
-import type { PayloadSpec } from '../payload/types.ts';
 import type { Anchor } from '../scenarios/resolve.ts';
 import { SHAPE_NAMES, type ShapeName } from '../scenarios/shapes.ts';
 import { TRANSPORT_NAMES, type TransportName } from '../transports/names.ts';
+import { LOG_TYPES } from '../logtypes/registry.ts';
 
 // Re-exported (not just imported) because other modules and tests still
 // import TransportName/TRANSPORT_NAMES from schema.ts — src/transports/names.ts
@@ -15,12 +14,22 @@ export interface TargetSpec {
   options?: Record<string, unknown>;
 }
 
+/**
+ * One selected log type's run configuration. `cardinality` names overrides
+ * onto the `LogTypeDef`'s declared fields (see src/logtypes/registry.ts) —
+ * the profile no longer declares fields itself, the type does.
+ */
+export interface TypeConfig {
+  batch_size: number;
+  anchor: Anchor;
+  scenario: ShapeName;
+  cardinality?: Record<string, number>;
+}
+
 export interface Profile {
   name: string;
   target: TargetSpec;
-  payload: PayloadSpec;
-  anchor: Anchor;
-  scenario: ShapeName;
+  types: Record<string, TypeConfig>;
   emit_timeline?: boolean;
   thresholds?: Record<string, string>;
 }
@@ -113,7 +122,7 @@ function validateTransportOptions(
   const spec = TRANSPORT_OPTION_SPECS[transport];
   const validKeys = Object.keys(spec);
   for (const [key, value] of Object.entries(options)) {
-    // hasOwnProperty guard, same as the TEMPLATES lookup below: an unguarded
+    // hasOwnProperty guard, same as the LOG_TYPES lookup below: an unguarded
     // `spec[key]` walks the prototype chain, so `{"constructor": true}` (or
     // any other Object.prototype member name) resolves to a function
     // instead of undefined. The profile is still rejected either way — but
@@ -132,83 +141,89 @@ function validateTransportOptions(
   }
 }
 
-function validateFieldSpec(name: string, v: unknown, errors: string[]): void {
+function validateAnchor(v: unknown, errors: string[], prefix: string): void {
   if (!isObject(v)) {
-    errors.push(`payload.fields.${name}: must be an object`);
-    return;
-  }
-
-  if ('values' in v) {
-    if (!Array.isArray(v.values) || v.values.length === 0) {
-      errors.push(`payload.fields.${name}.values: must be a non-empty array`);
-      return;
-    }
-    if (!v.values.every((x) => typeof x === 'string')) {
-      errors.push(`payload.fields.${name}.values: every entry must be a string`);
-    }
-    if ('weights' in v && v.weights !== undefined) {
-      if (!Array.isArray(v.weights) || v.weights.length !== v.values.length) {
-        errors.push(
-          `payload.fields.${name}.weights: length must match values (${v.values.length})`,
-        );
-      } else if (!v.weights.every((w) => typeof w === 'number' && w >= 0)) {
-        errors.push(`payload.fields.${name}.weights: every weight must be a non-negative number`);
-      }
-    }
-    if ('distribution' in v && v.distribution !== undefined) {
-      errors.push(`payload.fields.${name}: "distribution" is only valid with "cardinality"`);
-    }
-    if ('pad_to' in v && v.pad_to !== undefined) {
-      errors.push(`payload.fields.${name}: "pad_to" is only valid with "cardinality"`);
-    }
-    return;
-  }
-
-  if (!('cardinality' in v)) {
-    errors.push(`payload.fields.${name}: must declare either "cardinality" or "values"`);
-    return;
-  }
-
-  if ('weights' in v && v.weights !== undefined) {
-    errors.push(`payload.fields.${name}: "weights" is only valid with "values"`);
-  }
-
-  if (v.cardinality === 'unbounded') {
-    if ('prefix' in v && v.prefix !== undefined && typeof v.prefix !== 'string') {
-      errors.push(`payload.fields.${name}.prefix: must be a string`);
-    }
-    return;
-  }
-
-  if (!isPositiveInt(v.cardinality)) {
-    errors.push(
-      `payload.fields.${name}.cardinality: must be a positive integer or "unbounded"`,
-    );
-  }
-  if ('distribution' in v && v.distribution !== undefined &&
-      v.distribution !== 'uniform' && v.distribution !== 'zipf') {
-    errors.push(`payload.fields.${name}.distribution: must be "uniform" or "zipf"`);
-  }
-  if ('pad_to' in v && v.pad_to !== undefined && !isPositiveInt(v.pad_to)) {
-    errors.push(`payload.fields.${name}.pad_to: must be a positive integer`);
-  }
-}
-
-function validateAnchor(v: unknown, errors: string[]): void {
-  if (!isObject(v)) {
-    errors.push('anchor: must be an object');
+    errors.push(`${prefix}: must be an object`);
     return;
   }
   if (v.mode === 'knee') {
     if (typeof v.knee_eps !== 'number' || v.knee_eps <= 0) {
-      errors.push('anchor.knee_eps: must be a positive number when mode is "knee"');
+      errors.push(`${prefix}.knee_eps: must be a positive number when mode is "knee"`);
     }
   } else if (v.mode === 'absolute') {
     if (typeof v.base_eps !== 'number' || v.base_eps <= 0) {
-      errors.push('anchor.base_eps: must be a positive number when mode is "absolute"');
+      errors.push(`${prefix}.base_eps: must be a positive number when mode is "absolute"`);
     }
   } else {
-    errors.push('anchor.mode: must be "knee" or "absolute"');
+    errors.push(`${prefix}.mode: must be "knee" or "absolute"`);
+  }
+}
+
+/**
+ * Validates one entry of the profile's `types` map. `typeName` is the map
+ * key AND (per Task 6's resolveRun) becomes the PayloadSpec.template for
+ * this type, so an unknown type name is rejected here rather than later at
+ * generator-build time.
+ */
+function validateTypeConfig(typeName: string, v: unknown, errors: string[]): void {
+  const prefix = `types.${typeName}`;
+  // hasOwnProperty guard for the same prototype-pollution reason as the
+  // transport-option lookup above: LOG_TYPES is a plain object literal.
+  const known = Object.prototype.hasOwnProperty.call(LOG_TYPES, typeName);
+  if (!known) {
+    errors.push(
+      `${prefix}: unknown log type "${typeName}"; available: ${Object.keys(LOG_TYPES).join(', ')}`,
+    );
+  }
+
+  if (!isObject(v)) {
+    errors.push(`${prefix}: must be an object`);
+    return;
+  }
+
+  if (!isPositiveInt(v.batch_size)) {
+    errors.push(`${prefix}.batch_size: must be a positive integer`);
+  }
+
+  validateAnchor(v.anchor, errors, `${prefix}.anchor`);
+
+  if (!SHAPE_NAMES.includes(v.scenario as ShapeName)) {
+    errors.push(`${prefix}.scenario: must be one of ${SHAPE_NAMES.join(', ')}`);
+  }
+
+  if ('cardinality' in v && v.cardinality !== undefined) {
+    if (!isObject(v.cardinality)) {
+      errors.push(`${prefix}.cardinality: must be an object`);
+      return;
+    }
+    // Only checkable against the type's declared fields when the type name
+    // itself resolved — an unknown type already reported its own error above.
+    const def = known ? LOG_TYPES[typeName] : undefined;
+    const declared = def ? new Map(def.fields.map((f) => [f.name, f])) : null;
+    for (const [fieldName, fieldValue] of Object.entries(v.cardinality)) {
+      const field = declared?.get(fieldName);
+      if (declared && !field) {
+        errors.push(
+          `${prefix}.cardinality.${fieldName}: not a field of log type "${typeName}"; ` +
+            `available: ${[...declared.keys()].join(', ')}`,
+        );
+        continue;
+      }
+      if (!isPositiveInt(fieldValue)) {
+        errors.push(`${prefix}.cardinality.${fieldName}: must be a positive integer`);
+        continue;
+      }
+      // A field declared with a fixed `values` list has no numeric
+      // cardinality to override — silently accepting the override here
+      // would mean it never actually changes the generated field, the same
+      // silent-drop failure mode the merge in resolveRun is built to avoid.
+      if (field && !('cardinality' in field.spec)) {
+        errors.push(
+          `${prefix}.cardinality.${fieldName}: field "${fieldName}" has a fixed set of values ` +
+            `and does not support a cardinality override`,
+        );
+      }
+    }
   }
 }
 
@@ -245,34 +260,24 @@ export function validateProfile(raw: unknown): ValidationResult {
     }
   }
 
-  // payload
-  if (!isObject(raw.payload)) {
-    errors.push('payload: must be an object');
-  } else {
-    const p = raw.payload;
-    if (typeof p.template !== 'string' || p.template.length === 0) {
-      errors.push('payload.template: must be a non-empty string');
-    } else if (!Object.prototype.hasOwnProperty.call(TEMPLATES, p.template)) {
-      errors.push(
-        `payload.template: must be one of ${Object.keys(TEMPLATES).join(', ')}`,
-      );
-    }
-    if (!isPositiveInt(p.batch_size)) {
-      errors.push('payload.batch_size: must be a positive integer');
-    }
-    if (!isObject(p.fields) || Object.keys(p.fields).length === 0) {
-      errors.push('payload.fields: must be a non-empty object');
-    } else {
-      for (const [name, spec] of Object.entries(p.fields)) {
-        validateFieldSpec(name, spec, errors);
-      }
-    }
+  // The legacy single-payload shape is dropped, not supported alongside —
+  // this message is the only migration documentation a user gets.
+  if ('payload' in raw && raw.payload !== undefined) {
+    errors.push(
+      'payload: profile-level "payload" is no longer supported; declare one or more log types under "types" instead',
+    );
   }
 
-  validateAnchor(raw.anchor, errors);
-
-  if (!SHAPE_NAMES.includes(raw.scenario as ShapeName)) {
-    errors.push(`scenario: must be one of ${SHAPE_NAMES.join(', ')}`);
+  // types
+  if (!isObject(raw.types)) {
+    errors.push('types: must be an object');
+  } else if (Object.keys(raw.types).length === 0) {
+    // A profile that runs nothing is a configuration error, not an empty run.
+    errors.push('types: must declare at least one log type');
+  } else {
+    for (const [typeName, typeConfig] of Object.entries(raw.types)) {
+      validateTypeConfig(typeName, typeConfig, errors);
+    }
   }
 
   if ('emit_timeline' in raw && raw.emit_timeline !== undefined &&
