@@ -393,7 +393,7 @@ describe('bin/run.sh AWS region check', () => {
     const r = runWrapper(binDir, workdir, {
       ...s3Env,
       AWS_STUB_LOG: join(root, 'aws.log'),
-      AWS_REGION: 'us-gov-west-1',
+      AWS_REGION: 'test-region-1',
     });
     expect(r.stderr).not.toContain('AWS_DEFAULT_REGION');
   });
@@ -405,7 +405,7 @@ describe('bin/run.sh AWS region check', () => {
     const r = runWrapper(binDir, workdir, {
       ...s3Env,
       AWS_STUB_LOG: join(root, 'aws.log'),
-      AWS_DEFAULT_REGION: 'us-gov-west-1',
+      AWS_DEFAULT_REGION: 'test-region-1',
     });
     expect(r.stderr).not.toContain('neither AWS_REGION nor AWS_DEFAULT_REGION');
   });
@@ -443,7 +443,7 @@ describe('bin/run.sh artifact-shipping accounting', () => {
     const r = runWrapper(binDir, workdir, {
       RESULTS_URI: 's3://bucket/prefix',
       INDEX_CLI,
-      AWS_REGION: 'us-gov-west-1',
+      AWS_REGION: 'test-region-1',
       AWS_STUB_LOG: join(root, 'aws.log'),
     });
     // index.json, summary.json, run.log — no timeline, no raw at EMIT_TIMELINE=0.
@@ -481,7 +481,7 @@ describe('bin/run.sh artifact-shipping accounting', () => {
     const r = runWrapper(binDir, workdir, {
       RESULTS_URI: 's3://bucket/prefix',
       INDEX_CLI,
-      AWS_REGION: 'us-gov-west-1',
+      AWS_REGION: 'test-region-1',
       AWS_STUB_LOG: join(root, 'aws.log'),
     });
     expect(r.stderr).toContain('0 artifacts shipped');
@@ -523,7 +523,7 @@ describe('bin/run.sh s3:// upload path (stub aws on PATH)', () => {
       KEEP_RAW: '1',
       INDEX_CLI,
       TIMELINE_CLI,
-      AWS_REGION: 'us-gov-west-1',
+      AWS_REGION: 'test-region-1',
       AWS_STUB_LOG: awsLog,
     });
     expect(r.status).toBe(0);
@@ -558,7 +558,7 @@ describe('bin/run.sh s3:// upload path (stub aws on PATH)', () => {
       EMIT_TIMELINE: '1',
       INDEX_CLI,
       TIMELINE_CLI,
-      AWS_REGION: 'us-gov-west-1',
+      AWS_REGION: 'test-region-1',
       AWS_STUB_LOG: awsLog,
     });
     expect(r.status).toBe(0);
@@ -575,7 +575,7 @@ describe('bin/run.sh s3:// upload path (stub aws on PATH)', () => {
     runWrapper(binDir, workdir, {
       RESULTS_URI: 's3://bucket',
       INDEX_CLI,
-      AWS_REGION: 'us-gov-west-1',
+      AWS_REGION: 'test-region-1',
       AWS_STUB_LOG: awsLog,
     });
     expect(awsDestinations(awsLog)).toContain('s3://bucket/runs/r1/gen-0/summary.json');
