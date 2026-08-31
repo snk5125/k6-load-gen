@@ -62,6 +62,12 @@ describe('buildThresholds', () => {
   });
 
   it('classifies a generated threshold as structural and a profile one as not', () => {
+    // Must call buildThresholds itself: isStructuralThreshold is backed by
+    // the most recent call's tracked set, not a name heuristic, so this
+    // test cannot rely on state a *previous* test happened to leave behind
+    // (that would pass only by luck of test ordering — see the throw added
+    // to isStructuralThreshold for what happens when nothing has run yet).
+    buildThresholds({ abort_on_fail: false, active_types: ['auditd', 'cloudtrail'] });
     expect(isStructuralThreshold('events_sent{scenario:auditd}')).toBe(true);
     expect(isStructuralThreshold('send_failures')).toBe(false);
   });
@@ -72,7 +78,13 @@ describe('buildThresholds', () => {
       profile_thresholds: { 'send_duration{scenario:auditd}': 'p(99)<250' },
       abort_on_fail: false, active_types: ['auditd'],
     });
-    expect(t['send_duration{scenario:auditd}']).toContain('p(99)<250');
+    expect(t['send_duration{scenario:auditd}']).toEqual(['p(99)<250']);
+    // The whole reason isStructuralThreshold is a tracked set rather than a
+    // name heuristic: this key LOOKS structural (metric + {scenario:x}) but
+    // its value here is the profile's own SLO, not ours — so it must not be
+    // classified as structural, or a later consumer would silently exclude
+    // a real SLO from the run's verdict.
+    expect(isStructuralThreshold('send_duration{scenario:auditd}')).toBe(false);
   });
 
   it('still emits the validity thresholds a profile cannot weaken', () => {

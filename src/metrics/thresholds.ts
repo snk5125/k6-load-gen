@@ -71,10 +71,31 @@ export const STRUCTURAL_EXPRESSIONS: Record<string, string> = {
  * re-executes this module top to bottom before invoking the handler) — so by
  * the time a consumer reads `isStructuralThreshold`, this set already
  * reflects that same call.
+ *
+ * Contract for callers (e.g. Task 9's summary, which reads
+ * `summary.thresholds`): pass the bare tagged metric name — the same shape
+ * `buildThresholds` generates as a key, e.g. `send_duration{scenario:auditd}`
+ * — NOT the composite `metric:expression` string `summary.thresholds` itself
+ * is keyed by (see `src/summary/build.ts`, `thresholds[`${name}:${expression}`]
+ * = { ok, metric: name, expression }`). Pass `entry.metric`, not the map key.
  */
-let structuralKeys = new Set<string>();
+let structuralKeys: Set<string> | null = null;
 
 export function isStructuralThreshold(name: string): boolean {
+  if (structuralKeys === null) {
+    // A silent wrong answer here is the worst failure mode this function
+    // has: every consultation would read as "not structural", so all 18
+    // structural keys would be misclassified as real SLOs and pollute the
+    // run's verdict without any visible symptom. Fail loudly instead — this
+    // only happens if something consults isStructuralThreshold before
+    // buildThresholds has run at least once in this runtime (e.g. from
+    // another module's top-level code that happens to evaluate first).
+    throw new Error(
+      'isStructuralThreshold() called before buildThresholds() has run in this runtime; ' +
+        'the structural-key set is populated as a side effect of that call, so nothing has ' +
+        'classified any threshold yet',
+    );
+  }
   return structuralKeys.has(name);
 }
 
