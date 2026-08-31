@@ -157,6 +157,43 @@ types `mixed-estate.json` declares, so it took no part in the live check above. 
 (the `json-flat` family's `serialize`/`parseArtifact`) is unchanged from before this branch, so
 this is a scope gap in this branch's verification, not a known regression.
 
+## Aggregator configs
+
+`aggregator-configs/<type>/{vector/transform.json,cribl/pipeline.json}` — a Vector `remap`
+transform and a Cribl Stream pipeline per log type, **generated** from the same `LogTypeDef`s
+above, driven by each type's own format family (`src/logtypes/families/`) so the parsing config
+can never drift from what the generator actually serializes. Never hand-edit a file under
+`aggregator-configs/`; it is written by:
+
+```bash
+npm run aggregator-configs
+```
+
+**A CI drift gate enforces this.** `.github/workflows/ci.yml`'s "Aggregator configs are up to
+date" step re-runs the command above and fails the build on any diff; `tests/aggregator/cli.test.ts`
+does the same check as a unit test, so a stale config fails `npm test` locally too, not just in
+CI.
+
+**Vector configs are emitted as JSON, not YAML** (a deviation from an earlier spec draft). The
+repo has zero runtime dependencies — no YAML library — and hand-rolling a YAML emitter for VRL
+dense with regex backslashes (`\S`, `\d`, `[^"]`) is exactly where a hand-rolled emitter breaks
+silently. Verified live: Vector accepts a JSON config file with no complaint about format, and all
+four rendered transforms pass `vector validate` and the full round trip below. **Do not "fix" this
+back to YAML** without re-deriving a way to emit it that doesn't reintroduce that risk — see
+`src/aggregator/vector.ts`'s doc comment for the full reasoning.
+
+### Verification: Vector automated, Cribl manual — a green suite does not mean both are checked
+
+| Vendor | Verified how | Automated? |
+|---|---|---|
+| Vector | `tests/aggregator/roundtrip/` pushes real generator-produced events through each committed `transform.json`'s exact VRL, via the official `timberio/vector:latest-alpine` image, and asserts every declared field extracts with the generator's value | Yes — but **not** part of `npm test` (it needs Docker). Run it explicitly: `tests/aggregator/roundtrip/run.sh`. See that directory's README for what it does and does not prove. |
+| Cribl | A documented manual procedure — import `pipeline.json` into a real Cribl Stream instance, feed it the same sample events, confirm every field extracts | **No.** No Cribl instance and no license tier are available here. See `aggregator-configs/README.md` for the procedure and its verification log (date, Cribl version, and outcome per check — currently unperformed). |
+
+**A reader must not infer from a passing `npm test`, or even a passing Vector round trip, that
+the Cribl pipelines have been checked against a real instance.** They have not. `aggregator-
+configs/README.md`'s verification log is the source of truth for whether, when, and against which
+Cribl version that ever happened.
+
 ## Scenarios
 
 Twelve shapes, all relative multipliers resolved against the profile's anchor:
