@@ -113,7 +113,13 @@ function validateTransportOptions(
   const spec = TRANSPORT_OPTION_SPECS[transport];
   const validKeys = Object.keys(spec);
   for (const [key, value] of Object.entries(options)) {
-    const keySpec = spec[key];
+    // hasOwnProperty guard, same as the TEMPLATES lookup below: an unguarded
+    // `spec[key]` walks the prototype chain, so `{"constructor": true}` (or
+    // any other Object.prototype member name) resolves to a function
+    // instead of undefined. The profile is still rejected either way — but
+    // without this guard it fails with the misleading `must be undefined`
+    // message instead of the intended unknown-option message.
+    const keySpec = Object.prototype.hasOwnProperty.call(spec, key) ? spec[key] : undefined;
     if (!keySpec) {
       errors.push(
         `target.options.${key}: unknown option for transport "${transport}"; valid options: ${validKeys.join(', ')}`,

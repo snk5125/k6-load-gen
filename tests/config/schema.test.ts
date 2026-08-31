@@ -206,4 +206,21 @@ describe('validateProfile — per-transport option validation', () => {
     const r = validateProfile({ ...valid, name: 42, target: { transport: 'otlp-grpc', endpoint: 'a:4317', options: { plaintxt: true } } });
     expect(r.errors.length).toBeGreaterThan(1);
   });
+
+  it('rejects an inherited Object.prototype key as a transport option, with the unknown-option message', () => {
+    // Same class of bug as the TEMPLATES lookup above, in the transport
+    // option spec instead: an unguarded `spec[key]` walks the prototype
+    // chain, so `{"constructor": true}` resolves to Object's constructor
+    // function rather than undefined. The profile was still correctly
+    // REJECTED either way (optionMatchesSpec fails on a function value) —
+    // but with the wrong message: "must be undefined" instead of naming
+    // "constructor" as an unknown option. Assert the intended message, not
+    // just rejection, so a regression to the misleading message is caught.
+    const r = validateProfile({
+      ...valid,
+      target: { transport: 'otlp-grpc', endpoint: 'a:4317', options: { constructor: true } },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/target\.options\.constructor.*unknown option/);
+  });
 });

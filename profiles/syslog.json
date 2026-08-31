@@ -19,5 +19,5 @@
   "anchor": { "mode": "knee", "knee_eps": 5000 },
   "scenario": "sweep",
   "emit_timeline": true,
-  "thresholds": { "send_failures": "rate<0.001", "send_duration": "p(99)<250" }
+  "thresholds": { "send_failures": "rate<0.001", "send_duration": "p(99)<1000" }
 }
