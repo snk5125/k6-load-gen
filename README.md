@@ -152,6 +152,11 @@ throwaway Node receiver that speaks real OTLP/gRPC was out of scope for that che
 *payload* for all three types is confirmed intact end-to-end; the `otlp-grpc` transport's handling
 of a multi-scenario run specifically has not been.
 
+**`json-app` received no live-delivery verification on this branch.** It is not one of the three
+types `mixed-estate.json` declares, so it took no part in the live check above. Its wire output
+(the `json-flat` family's `serialize`/`parseArtifact`) is unchanged from before this branch, so
+this is a scope gap in this branch's verification, not a known regression.
+
 ## Scenarios
 
 Twelve shapes, all relative multipliers resolved against the profile's anchor:

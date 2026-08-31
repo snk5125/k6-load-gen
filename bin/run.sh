@@ -47,9 +47,11 @@ FIFO="$WORKDIR/k6.fifo"
 # spec §2.2 exists to eliminate.
 #
 # Precedence is ENVIRONMENT OVER PROFILE, matching every other setting in
-# this project (TARGET, SCENARIO, RATE, ... all override the profile via
-# src/config/env.ts). An explicitly-set EMIT_TIMELINE therefore still wins
-# over a profile that says false.
+# this project (TARGET, TYPES, <TYPE>_RATE, <TYPE>_SCENARIO, ... all
+# override the profile via src/config/env.ts — a bare SCENARIO or RATE is
+# no longer valid; see readOverrides' LEGACY_GLOBAL_OVERRIDES). An
+# explicitly-set EMIT_TIMELINE therefore still wins over a profile that
+# says false.
 #
 # `${EMIT_TIMELINE:+set}` — not `${EMIT_TIMELINE:-1}` — is what distinguishes
 # "the operator chose a value" from "nobody set one", which is the whole
