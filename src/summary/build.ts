@@ -22,6 +22,17 @@ function parseSubMetricKey(name: string): { metric: string; type: string } | nul
 }
 
 /**
+ * The inverse of `parseSubMetricKey`: builds a tagged sub-metric key from a
+ * metric name and a type. Kept next to `SUB_METRIC_KEY_RE` so the
+ * `{scenario:<type>}` shape has exactly one source of truth in this file —
+ * a change to the tag format only ever needs updating here and in the
+ * regex above, not at each call site that currently needs a tagged key.
+ */
+function formatSubMetricKey(metric: string, type: string): string {
+  return `${metric}{scenario:${type}}`;
+}
+
+/**
  * Per-type breakdown, one field per STRUCTURAL_EXPRESSIONS metric (the same
  * six metrics whose tagged sub-metric a structural threshold forces into
  * `handleSummary` in the first place — see src/metrics/thresholds.ts).
@@ -131,7 +142,7 @@ const SCALAR_FIELD: Partial<Record<string, 'count' | 'rate'>> = {
 function buildTypeSummary(metrics: Record<string, unknown>, type: string): TypeSummary {
   const out = {} as Record<string, number | Record<string, number> | null>;
   for (const metric of Object.keys(STRUCTURAL_EXPRESSIONS)) {
-    const raw = metrics[`${metric}{scenario:${type}}`] as K6Metric | undefined;
+    const raw = metrics[formatSubMetricKey(metric, type)] as K6Metric | undefined;
     if (!raw || !raw.values) {
       out[metric] = null;
       continue;

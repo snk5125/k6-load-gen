@@ -80,9 +80,16 @@ export function indexRecord(summary: Record<string, unknown>): Record<string, Sc
   const target = (cfg.target ?? {}) as Record<string, unknown>;
   const metrics = (summary.metrics ?? {}) as Record<string, Record<string, number>>;
   const validity = (summary.validity ?? {}) as Record<string, unknown>;
-  const thresholds = (summary.thresholds ?? {}) as Record<string, { ok?: boolean }>;
+  // Since Task 9, summary.thresholds is { slo: [...], structural_count } —
+  // NOT a flat map of every declared threshold. Read the `slo` array only:
+  // structural thresholds (src/metrics/thresholds.ts STRUCTURAL_EXPRESSIONS)
+  // are trivially-true plumbing that can never fail, so counting them here
+  // would not just miss failures, it would make this count meaningless in
+  // the OTHER direction too (padding it with entries that never contribute).
+  const thresholds = (summary.thresholds ?? {}) as { slo?: Array<{ ok?: boolean }> };
+  const slo = Array.isArray(thresholds.slo) ? thresholds.slo : [];
 
-  const failed = Object.values(thresholds).filter((t) => t && t.ok === false).length;
+  const failed = slo.filter((t) => t && t.ok === false).length;
 
   return {
     schema_version: typeof summary.schema_version === 'number' ? summary.schema_version : null,
