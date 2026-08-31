@@ -16,8 +16,6 @@ docker run --rm \
   -e PROFILE=otlp-grpc \
   -e RUN_ID=sweep-1 \
   -e TARGET=collector.example:4317 \
-  -e SCENARIO=sweep \
-  -e KNEE_EPS=5000 \
   k6-load-gen:latest
 ```
 
@@ -36,26 +34,22 @@ overridden** — configuration is environment only.
 
 ### Profiles
 
-`profiles/*.json`, bundled into the image. A profile declares the transport and endpoint, the
-payload shape, the rate anchor, the scenario, and any thresholds:
+`profiles/*.json`, bundled into the image. A profile declares the transport and endpoint, one or
+more log types to generate (each with its own rate anchor, scenario and batch size), and any
+thresholds:
 
 ```jsonc
 {
   "name": "otlp-grpc",
   "target": { "transport": "otlp-grpc", "endpoint": "collector.example:4317",
               "options": { "plaintext": true, "timeout": "10s" } },
-  "payload": {
-    "template": "json-app",
-    "batch_size": 100,
-    "fields": {
-      "host":     { "cardinality": 500, "distribution": "zipf" },
-      "level":    { "values": ["INFO", "WARN", "ERROR"], "weights": [0.8, 0.15, 0.05] },
-      "trace_id": { "cardinality": "unbounded" },
-      "message":  { "cardinality": 50, "pad_to": 512 }
+  "types": {
+    "json-app": {
+      "batch_size": 100,
+      "anchor":     { "mode": "knee", "knee_eps": 5000 },
+      "scenario":   "sweep"
     }
   },
-  "anchor":     { "mode": "knee", "knee_eps": 5000 },
-  "scenario":   "sweep",
   "thresholds": { "send_failures": "rate<0.001", "send_duration": "p(99)<250" }
 }
 ```
@@ -67,6 +61,13 @@ Field **cardinality** is the point: it drives the aggregator's real parse and in
 "HEC_TOKEN"`). Profiles are committed, and the resolved profile is embedded in the run summary —
 unrecognised `target.options` keys are redacted, but the allowlist is a safety net, not a licence.
 
+**The legacy single-type shape is dropped, not supported alongside.** A profile written before
+multi-type support had a top-level `payload`, `anchor` and `scenario` instead of `types`. All three
+are rejected at validation if a profile still has them — `payload` with "declare one or more log
+types under `types` instead", `anchor`/`scenario` with "move it into the matching entry under
+`types` instead" — rather than silently ignored, which would otherwise look like a working profile
+quietly running different rates/shapes than whatever is still sitting at the top level.
+
 ### Environment
 
 | Variable | Required | Default | Purpose |
@@ -74,18 +75,87 @@ unrecognised `target.options` keys are redacted, but the allowlist is a safety n
 | `PROFILE` | yes | — | which profile to load |
 | `RUN_ID` | yes | — | correlation key, unique per run |
 | `TARGET` | no | profile | override the endpoint |
-| `SCENARIO` | no | profile | override the load shape |
-| `KNEE_EPS` / `RATE` | no | profile | override the rate anchor (`RATE` pins an absolute base and wins) |
 | `GEN_INDEX` / `GEN_COUNT` | no | `0` / `1` | fleet slicing |
 | `DURATION_SCALE` | no | `1` | multiply every stage duration |
+| `TYPES` | no | every type the profile declares | comma-separated subset of the profile's log types to run this invocation — see **Log types** below |
 | `RESULTS_URI` | no | — | `s3://bucket/prefix` or a local path; unset means artifacts stay in `WORKDIR` |
 | `EMIT_TIMELINE` | no | profile, else `1` | `--out json` and the bucketed timeline; costs throughput at very high rates |
 | `KEEP_RAW` | no | `0` | also ship the gzipped raw sample stream |
 | `TIMELINE_BUCKET_SEC` | no | `15` | timeline bucket width |
 | `AWS_REGION` | when `RESULTS_URI` is `s3://` | — | the AWS CLI cannot resolve a region on its own in most container runtimes |
 
+**`SCENARIO`, `RATE` and `KNEE_EPS` no longer exist as bare global overrides.** Now that a profile
+can declare more than one log type, a bare `RATE` has no unambiguous target — which type would it
+mean? Setting any of the three fails the run at init, naming its per-type replacement
+(`<TYPE>_SCENARIO`, `<TYPE>_RATE`, `<TYPE>_KNEE_EPS`); see **Log types** below.
+
 `DURATION_SCALE=0.01` turns any long shape into a wiring check — it runs a 4-hour soak in minutes,
 proving the target, credentials and payload before you commit to a real run.
+
+## Log types
+
+Four log types ship today, each a `LogTypeDef` in `src/logtypes/definitions/`. Each belongs to a
+**format family** (`src/logtypes/families/`), which owns the wire grammar — both how the type
+serializes and how a reader parses it back (its `ParseArtifact`) — so the two can never drift apart.
+
+| Type | Format family | Parse class | Shape |
+|---|---|---|---|
+| `json-app` | `json-flat` | `kind: 'json', nested: false` | one flat JSON object per event |
+| `auditd` | `kv-audit` | `kind: 'kv'` — fixed `type=… msg=audit(epoch.millis:serial): ` prefix, then `key=value` pairs | Linux auditd SYSCALL record |
+| `nginx-access` | `regex-clf` | `kind: 'regex'` — nginx/Apache Combined Log Format | the only regex/grok-parsed family; a regex parse typically costs an aggregator 10-50x a JSON decode |
+| `cloudtrail` | `json-nested` | `kind: 'json', nested: true`, `envelope: { wrap: 'Records' }` | AWS CloudTrail management-event record, fields at dotted paths (`userIdentity.arn`) |
+
+A profile enables a type by adding it under `types`, each with its own `batch_size`, `anchor` and
+`scenario` (see **Profiles** above) — one k6 scenario per active type, so each gets its own load
+shape and reports its own metrics in `summary.types.<type>`.
+
+### Per-type environment surface
+
+Every declared type gets its own `<TYPE>_*` environment prefix, derived by upper-casing the type
+name and turning every hyphen into an underscore — `nginx-access` becomes `NGINX_ACCESS`, so its
+rate override is `NGINX_ACCESS_RATE`, not `NGINX-ACCESS_RATE`. `json-app` becomes `JSON_APP`, and
+`auditd`/`cloudtrail` need no translation.
+
+| Variable | Purpose |
+|---|---|
+| `<TYPE>_RATE` | pin an absolute base rate for this type (wins over `<TYPE>_KNEE_EPS`) |
+| `<TYPE>_KNEE_EPS` | override this type's knee-anchor estimate |
+| `<TYPE>_SCENARIO` | override this type's load shape |
+| `<TYPE>_BATCH_SIZE` | override this type's events-per-send batch size |
+
+`TYPES` (see **Environment** above) subsets which declared types actually run this invocation —
+**unset means every type the profile declares runs.** A `<TYPE>_*` variable set for a type that
+`TYPES` excludes is a warning, not a silent no-op: the run still starts, but `summary.json`'s
+`warnings` names the variable and says why it had no effect. The same warning-not-silence rule
+applies to a `<TYPE>_*`-shaped variable whose prefix matches no type the profile declares at all —
+catches a typo like `CLOUDTRAILL_RATE` that the exact-match check above cannot.
+
+### Known limitations
+
+**CloudTrail emits one record per envelope.** A real CloudTrail delivery batches many records into
+one `Records[]` array; this generator always wraps exactly one. That exercises an aggregator's
+unroll code path (pulling records out of the array) but not its amortisation of per-request
+overhead across a large array — a real deployment's CloudTrail ingest cost per record can be lower
+than what a one-record-per-envelope run would suggest.
+
+**Field values are synthetic.** Cardinality is realistic — the generator drives the same number of
+distinct values, with the same skew, a real deployment would see — but the values themselves are
+not real. CloudTrail's `awsRegion` values are tokens like `region-3`, never an actual AWS region
+name; ARNs are `arn:synthetic::0:role/r-7`, not a real account or role. A downstream rule keyed on
+a real value (a specific region, a specific role ARN) will not fire against this traffic.
+
+**Live delivery has been verified for `auditd`, `cloudtrail` and `nginx-access` over `hec`, not
+over `otlp-grpc`.** `mixed-estate.json` (the shipped profile declaring all three) targets
+`otlp-grpc`; the live check that confirmed the receiver's per-type counts match
+`summary.types.<type>.events_sent` substituted the `hec` transport instead, because standing up a
+throwaway Node receiver that speaks real OTLP/gRPC was out of scope for that check. The generated
+*payload* for all three types is confirmed intact end-to-end; the `otlp-grpc` transport's handling
+of a multi-scenario run specifically has not been.
+
+**`json-app` received no live-delivery verification on this branch.** It is not one of the three
+types `mixed-estate.json` declares, so it took no part in the live check above. Its wire output
+(the `json-flat` family's `serialize`/`parseArtifact`) is unchanged from before this branch, so
+this is a scope gap in this branch's verification, not a known regression.
 
 ## Scenarios
 

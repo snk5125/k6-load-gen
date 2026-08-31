@@ -19,9 +19,31 @@ export function renderSummary(s: RunSummary): string {
     `dropped iterations: ${s.validity.dropped_iterations}   <-- MUST be 0`,
   ];
 
-  const failed = Object.values(s.thresholds).filter((t) => !t.ok);
+  // Structural thresholds (see src/metrics/thresholds.ts STRUCTURAL_EXPRESSIONS)
+  // never fail by construction — they exist only to force a per-type
+  // sub-metric into this summary. With three active types that is eighteen
+  // never-failing entries; showing a count instead of one line each is what
+  // keeps this block from swamping the real SLO verdicts below.
+  if (s.thresholds.structural_count > 0) {
+    lines.push(`structural thresholds : ${s.thresholds.structural_count} (plumbing; never fail — see docs)`);
+  }
+
+  if (Object.keys(s.types).length > 0) {
+    lines.push('', 'PER-TYPE BREAKDOWN:');
+    for (const type of Object.keys(s.types).sort()) {
+      const t = s.types[type];
+      const dur = t.send_duration;
+      lines.push(
+        `  ${type}: attempted=${t.events_attempted ?? 'null'} sent=${t.events_sent ?? 'null'} ` +
+          `failure_rate=${t.send_failures === null ? 'null' : n(t.send_failures * 100, 3) + '%'} ` +
+          `p99=${dur === null ? 'null' : n(dur['p(99)'])}ms`,
+      );
+    }
+  }
+
+  const failed = s.thresholds.slo.filter((t) => !t.ok);
   if (failed.length > 0) {
-    lines.push('', 'FAILED THRESHOLDS:');
+    lines.push('', 'FAILED THRESHOLDS (SLO):');
     for (const t of failed) lines.push(`  - ${t.metric} ${t.expression}`);
   }
 

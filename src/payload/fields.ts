@@ -80,8 +80,9 @@ export function buildField(name: string, spec: FieldSpec): FieldGenerator {
   }
 
   const n = spec.cardinality;
+  const prefix = spec.prefix ?? `${name}-`;
   const pool = new Array<string>(n);
-  for (let i = 0; i < n; i++) pool[i] = pad(`${name}-${i}`, spec.pad_to);
+  for (let i = 0; i < n; i++) pool[i] = pad(`${prefix}${i}`, spec.pad_to);
 
   const dist: Distribution = spec.distribution ?? 'uniform';
   if (dist === 'zipf') {

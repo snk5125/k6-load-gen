@@ -1,12 +1,24 @@
 import { buildField, type FieldGenerator } from './fields.ts';
 import type { LogEvent, PayloadSpec } from './types.ts';
-import { jsonApp, type Template } from './templates/json-app.ts';
+import { FAMILIES } from '../logtypes/families/index.ts';
+import { LOG_TYPES } from '../logtypes/registry.ts';
+import { resolveSeverity } from '../logtypes/severity.ts';
 
-export type { Template };
+export type Template = (
+  fields: Record<string, string>,
+  ts_ms: number,
+  seq: number,
+) => { severity: string; body: string };
 
-export const TEMPLATES: Record<string, Template> = {
-  'json-app': jsonApp,
-};
+export const TEMPLATES: Record<string, Template> = Object.fromEntries(
+  Object.values(LOG_TYPES).map((def) => [
+    def.name,
+    (fields: Record<string, string>, ts_ms: number, seq: number) => ({
+      severity: resolveSeverity(def, fields),
+      body: FAMILIES[def.family].serialize(def, fields, ts_ms, seq),
+    }),
+  ]),
+);
 
 export interface GeneratorContext {
   run_id: string;
@@ -43,7 +55,7 @@ export function buildGenerator(
       for (let f = 0; f < names.length; f++) {
         fields[names[f]] = gens[f].valueAt(seq);
       }
-      const { severity, body } = template(fields, seq);
+      const { severity, body } = template(fields, now_ms, seq);
       out[i] = {
         ts_ms: now_ms,
         severity,
@@ -51,6 +63,10 @@ export function buildGenerator(
         fields,
         run_id: ctx.run_id,
         gen_index: ctx.gen_index,
+        // spec.template IS the log type name (see buildPayloadSpec in
+        // src/config/resolve.ts: `template: typeName`) — no separate
+        // "which type" input is needed here.
+        type: spec.template,
         seq,
       };
     }

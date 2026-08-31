@@ -1,0 +1,30 @@
+{
+  "name": "mixed-estate",
+  "target": {
+    "transport": "otlp-grpc",
+    "endpoint": "collector.example:4317",
+    "options": { "plaintext": true, "timeout": "10s" }
+  },
+  "types": {
+    "auditd": {
+      "batch_size": 50,
+      "anchor": { "mode": "absolute", "base_eps": 3000 },
+      "scenario": "soak",
+      "cardinality": { "key": 5 }
+    },
+    "cloudtrail": {
+      "batch_size": 20,
+      "anchor": { "mode": "knee", "knee_eps": 800 },
+      "scenario": "sweep",
+      "cardinality": { "eventName": 25 }
+    },
+    "nginx-access": {
+      "batch_size": 100,
+      "anchor": { "mode": "absolute", "base_eps": 6000 },
+      "scenario": "spike",
+      "cardinality": { "http_user_agent": 100 }
+    }
+  },
+  "emit_timeline": true,
+  "thresholds": { "send_failures": "rate<0.001" }
+}

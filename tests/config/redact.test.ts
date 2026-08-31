@@ -6,9 +6,9 @@ const base = (options: Record<string, unknown>): Profile =>
   ({
     name: 'p',
     target: { transport: 'hec', endpoint: 'https://splunk:8088', options },
-    payload: { template: 'json-app', batch_size: 10, fields: { host: { cardinality: 3 } } },
-    anchor: { mode: 'absolute', base_eps: 100 },
-    scenario: 'smoke',
+    types: {
+      'json-app': { batch_size: 10, anchor: { mode: 'absolute', base_eps: 100 }, scenario: 'smoke' },
+    },
   }) as Profile;
 
 // Like `base`, but lets a test supply its own `target` (transport, endpoint,
@@ -16,9 +16,9 @@ const base = (options: Record<string, unknown>): Profile =>
 const profile = (overrides: { target: Profile['target'] }): Profile =>
   ({
     name: 'p',
-    payload: { template: 'json-app', batch_size: 10, fields: { host: { cardinality: 3 } } },
-    anchor: { mode: 'absolute', base_eps: 100 },
-    scenario: 'smoke',
+    types: {
+      'json-app': { batch_size: 10, anchor: { mode: 'absolute', base_eps: 100 }, scenario: 'smoke' },
+    },
     ...overrides,
   }) as Profile;
 
@@ -73,9 +73,7 @@ describe('redactProfile', () => {
     const p = base({ token: 'x' });
     const r = redactProfile(p);
     expect(r.name).toBe(p.name);
-    expect(r.payload).toEqual(p.payload);
-    expect(r.anchor).toEqual(p.anchor);
-    expect(r.scenario).toBe(p.scenario);
+    expect(r.types).toEqual(p.types);
     expect(r.target.endpoint).toBe(p.target.endpoint);
     expect(r.target.transport).toBe(p.target.transport);
   });

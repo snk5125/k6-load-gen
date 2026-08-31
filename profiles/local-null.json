@@ -1,19 +1,13 @@
 {
   "name": "local-null",
   "target": { "transport": "null" },
-  "payload": {
-    "template": "json-app",
-    "batch_size": 10,
-    "fields": {
-      "host": { "cardinality": 50 },
-      "service": { "cardinality": 8, "distribution": "zipf" },
-      "level": { "values": ["INFO", "WARN", "ERROR"], "weights": [0.8, 0.15, 0.05] },
-      "trace_id": { "cardinality": "unbounded" },
-      "message": { "cardinality": 20, "pad_to": 256 }
+  "types": {
+    "json-app": {
+      "batch_size": 10,
+      "anchor": { "mode": "absolute", "base_eps": 1000 },
+      "scenario": "smoke"
     }
   },
-  "anchor": { "mode": "absolute", "base_eps": 1000 },
-  "scenario": "smoke",
   "emit_timeline": false,
   "thresholds": { "send_failures": "rate<0.001" }
 }

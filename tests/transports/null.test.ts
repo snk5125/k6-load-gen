@@ -4,7 +4,7 @@ import type { LogEvent } from '../../src/payload/types.ts';
 
 const ev = (body: string): LogEvent => ({
   ts_ms: 1, severity: 'INFO', body, fields: {},
-  run_id: 'r', gen_index: 0, seq: 0,
+  run_id: 'r', gen_index: 0, type: 'x', seq: 0,
 });
 
 const ctx = { run_id: 'r', gen_index: 0, iteration: 0 };

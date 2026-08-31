@@ -85,14 +85,28 @@ describe('artifactKeys', () => {
 });
 
 describe('indexRecord', () => {
+  // A real post-branch resolved_config: `scenario` is no longer a top-level
+  // key at all (schema.ts's validateProfile now REJECTS it — see the
+  // legacy-shape check) — it lives per type under `types`. The old fixture
+  // here (`resolved_config: { ..., scenario: 'sweep' }`) was a shape
+  // validateProfile can no longer produce, which is exactly why the
+  // `cfg.resolved_config.scenario` regression this fixture should have
+  // caught went uncaught.
   const summary = {
-    schema_version: 1,
+    schema_version: 2,
     run: { run_id: 'run-1', started_at: '2026-08-29T22:15:00.000Z', ended_at: '2026-08-29T22:25:00.000Z', duration_sec: 600, k6_version: 'v2.2.0' },
     generator: { gen_index: 0, gen_count: 1 },
     rate: { requested_eps: 5000, achieved_eps: 5000, delta_pct: 0 },
-    resolved_config: { name: 'otlp-grpc', target: { transport: 'otlp-grpc' }, scenario: 'sweep' },
+    resolved_config: {
+      name: 'otlp-grpc',
+      target: { transport: 'otlp-grpc' },
+      types: { auditd: { batch_size: 50, anchor: { mode: 'absolute', base_eps: 3000 }, scenario: 'sweep' } },
+    },
     metrics: { events_sent: { count: 300000 }, events_attempted: { count: 300000 }, send_failures: { rate: 0 } },
-    thresholds: { 'send_failures:rate<0.001': { ok: true, metric: 'send_failures', expression: 'rate<0.001' } },
+    thresholds: {
+      slo: [{ ok: true, metric: 'send_failures', expression: 'rate<0.001' }],
+      structural_count: 6,
+    },
     validity: { dropped_iterations: 0, generator_cpu: null, valid: true, reasons: [] },
   };
 
@@ -112,16 +126,68 @@ describe('indexRecord', () => {
     expect(r.achieved_eps).toBe(5000);
     expect(r.events_sent).toBe(300000);
     expect(r.dropped_iterations).toBe(0);
-    expect(r.schema_version).toBe(1);
+    expect(r.schema_version).toBe(2);
+  });
+
+  // The regression this fixture used to hide: resolved_config.scenario is
+  // no longer produced by any real profile (validateProfile rejects a
+  // top-level `scenario` outright — see schema.ts), so the pre-fix reader
+  // (`cfg.scenario as string`) read `undefined` on every real run and
+  // reported `scenario: null` for every record in the operator-facing
+  // index/ prefix. This fixture's `resolved_config.types.auditd.scenario`
+  // is the only shape validateProfile can actually produce.
+  it('reads scenario from resolved_config.types, not the no-longer-existent resolved_config.scenario', () => {
+    const legacyShaped = {
+      ...summary,
+      resolved_config: { ...summary.resolved_config, scenario: 'sweep', types: undefined },
+    };
+    expect(indexRecord(legacyShaped).scenario).toBeNull();
+  });
+
+  it('joins every active type\'s scenario for a multi-type run, comma-separated', () => {
+    const multiType = {
+      ...summary,
+      resolved_config: {
+        ...summary.resolved_config,
+        types: {
+          auditd: { batch_size: 50, anchor: { mode: 'absolute', base_eps: 3000 }, scenario: 'soak' },
+          cloudtrail: { batch_size: 20, anchor: { mode: 'knee', knee_eps: 800 }, scenario: 'sweep' },
+          'nginx-access': { batch_size: 100, anchor: { mode: 'absolute', base_eps: 6000 }, scenario: 'spike' },
+        },
+      },
+    };
+    expect(indexRecord(multiType).scenario).toBe('soak,sweep,spike');
   });
 
   it('records whether any threshold failed, so a run list can filter on it', () => {
     expect(indexRecord(summary).thresholds_failed).toBe(0);
     const failed = {
       ...summary,
-      thresholds: { 'a:x<1': { ok: false }, 'b:y<2': { ok: true } },
+      thresholds: {
+        slo: [{ ok: false, metric: 'a', expression: 'x<1' }, { ok: true, metric: 'b', expression: 'y<2' }],
+        structural_count: 0,
+      },
     };
     expect(indexRecord(failed).thresholds_failed).toBe(1);
+  });
+
+  // This is the regression Task 9 introduced and left uncaught: the old
+  // fixture literal above never exercised a REAL failing summary.thresholds.slo
+  // entry, so a `thresholds` reader still written for the pre-Task-9 flat
+  // shape (`Object.values(thresholds).filter(t => t.ok === false)`) passed
+  // every existing test here while silently reading `[sloArray, structural_count]`
+  // off the new shape and always computing 0 failures.
+  it('counts a failing SLO threshold even when structural thresholds are also present', () => {
+    const withStructural = {
+      ...summary,
+      thresholds: {
+        slo: [{ ok: false, metric: 'send_failures', expression: 'rate<0.001' }],
+        // A real multi-type run's structural_count (never itself a failure)
+        // must not be folded into thresholds_failed in either direction.
+        structural_count: 18,
+      },
+    };
+    expect(indexRecord(withStructural).thresholds_failed).toBe(1);
   });
 
   it('reads dropped_iterations from validity, not metrics', () => {

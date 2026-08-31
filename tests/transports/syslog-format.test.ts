@@ -4,7 +4,7 @@ import { formatRfc5424, formatRfc3164, frame, priority } from '../../src/transpo
 const ev = (over: Partial<any> = {}) => ({
   ts_ms: Date.parse('2026-08-30T12:34:56.789Z'),
   severity: 'WARN', body: '{"a":1}', fields: {},
-  run_id: 'r1', gen_index: 0, seq: 7, ...over,
+  run_id: 'r1', gen_index: 0, type: 'auditd', seq: 7, ...over,
 });
 
 describe('priority', () => {

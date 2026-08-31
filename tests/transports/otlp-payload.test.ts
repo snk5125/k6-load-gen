@@ -9,6 +9,7 @@ const ev = (overrides: Partial<LogEvent> = {}): LogEvent => ({
   fields: { host: 'web-1', region: 'us-east' },
   run_id: 'run-abc',
   gen_index: 2,
+  type: 'json-app',
   seq: 7,
   ...overrides,
 });
