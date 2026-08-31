@@ -44,6 +44,36 @@ describe('resolveRun — run-level overrides win over the profile', () => {
     expect(p.target.endpoint).toBe('a:4317');
     expect(p.types.auditd.anchor).toEqual({ mode: 'knee', knee_eps: 5000 });
   });
+
+  it('carries an applied per-type override into the returned profile, for the published summary', () => {
+    // resolved_config (handleSummary's published artifact) is built from
+    // run.profile — if an override didn't land there, a run started with
+    // AUDITD_RATE=9000 would publish its own ORIGINAL profile anchor
+    // instead of the 9000 it actually ran at.
+    const p = profile();
+    const r = resolveRun(p, { run_id: 'r' }, {
+      active: ['auditd'],
+      overrides: { auditd: { rate: 9000, scenario: 'spike', batch_size: 25 } },
+    });
+    expect(r.profile.types.auditd).toEqual({
+      batch_size: 25,
+      anchor: { mode: 'absolute', base_eps: 9000 },
+      scenario: 'spike',
+      cardinality: undefined,
+    });
+  });
+
+  it('leaves an inactive type\'s TypeConfig untouched in the returned profile', () => {
+    const p: Profile = {
+      ...profile(),
+      types: {
+        auditd: { batch_size: 100, anchor: { mode: 'knee', knee_eps: 5000 }, scenario: 'sweep' },
+        cloudtrail: { batch_size: 20, anchor: { mode: 'absolute', base_eps: 800 }, scenario: 'soak' },
+      },
+    };
+    const r = resolveRun(p, { run_id: 'r' }, { active: ['auditd'], overrides: {} });
+    expect(r.profile.types.cloudtrail).toEqual(p.types.cloudtrail);
+  });
 });
 
 describe('resolveRun — active types', () => {

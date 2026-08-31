@@ -1,4 +1,4 @@
-import type { Profile } from './schema.ts';
+import type { Profile, TypeConfig } from './schema.ts';
 import type { TypeOverride } from './env.ts';
 import { SHAPE_NAMES, SHAPES, type ShapeName } from '../scenarios/shapes.ts';
 import { resolveScenario, type Anchor } from '../scenarios/resolve.ts';
@@ -130,6 +130,13 @@ export function resolveRun(
   }
 
   const types: Record<string, TypeRun> = {};
+  // A copy of profile.types with each active type's TypeConfig replaced by
+  // what actually ran (post-override) — this is what lands in run.profile,
+  // which handleSummary publishes as resolved_config. Without this, a run
+  // started with AUDITD_RATE=9000 would still show the profile's original
+  // anchor in its own published summary, the same fidelity the old
+  // single-type resolveRun preserved by writing overrides into merged.anchor.
+  const mergedTypes: Record<string, TypeConfig> = { ...profile.types };
   for (const typeName of typeOverrides.active) {
     const tc = profile.types[typeName];
     if (!tc) {
@@ -184,9 +191,10 @@ export function resolveRun(
       abort_on_fail: resolved.abort_on_fail,
       warnings: resolved.warnings,
     };
+    mergedTypes[typeName] = { batch_size: batchSize, anchor, scenario: scenarioName, cardinality: tc.cardinality };
   }
 
-  const merged: Profile = { ...profile, target };
+  const merged: Profile = { ...profile, target, types: mergedTypes };
 
   return {
     run_id: o.run_id,
