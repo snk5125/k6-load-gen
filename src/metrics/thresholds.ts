@@ -5,6 +5,12 @@ export type ThresholdEntry =
 export interface ThresholdInput {
   profile_thresholds?: Record<string, string>;
   abort_on_fail: boolean;
+  /** Which log types run this invocation — see Task 6 `resolveRun.active_types`.
+   * One structural threshold per STRUCTURAL_EXPRESSIONS entry is generated for
+   * each of these, tagged `{scenario:<type>}`. Optional and defaults to no
+   * types (no structural thresholds) so callers that only care about
+   * profile/validity thresholds are unaffected. */
+  active_types?: string[];
 }
 
 /**
@@ -15,6 +21,62 @@ export interface ThresholdInput {
 export const VALIDITY_THRESHOLDS: Record<string, string[]> = {
   dropped_iterations: ['count<1'],
 };
+
+/**
+ * Plumbing, not SLOs. k6 only exposes a tagged sub-metric (e.g.
+ * `events_sent{scenario:auditd}`) to `handleSummary` when a threshold is
+ * declared on it — measured against this project's k6 binary: declaring
+ * thresholds on `events_sent{scenario:auditd}` and `{scenario:cloudtrail}`
+ * made `handleSummary` receive both sub-metrics plus the aggregate (500, 21,
+ * 521 — exactly 5x100 and 3x7); without them only the aggregate appeared.
+ * These trivially-true expressions exist solely to force that sub-metric
+ * split so a later per-type summary can read real numbers, not to gate a
+ * run's pass/fail verdict.
+ *
+ * The expression differs by k6 metric type; using the wrong one is a hard
+ * init error, also measured:
+ *   invalid threshold "count>=0" applied on metric t_trend; reason:
+ *   unsupported aggregation method count on metric of type trend. supported
+ *   aggregation methods for this metric are: avg, min, max, med, p
+ */
+export const STRUCTURAL_EXPRESSIONS: Record<string, string> = {
+  events_attempted: 'count>=0',
+  events_sent: 'count>=0',
+  wire_bytes: 'count>=0',
+  send_errors: 'count>=0',
+  send_failures: 'rate>=0',
+  send_duration: 'max>=0',
+};
+
+/**
+ * Which keys the MOST RECENT `buildThresholds` call generated structurally
+ * (i.e. actually populated with a STRUCTURAL_EXPRESSIONS value — not a key a
+ * profile threshold happened to override on the same tagged name). Reset on
+ * every call rather than accumulated, so it always reflects the run
+ * currently in scope.
+ *
+ * This is deliberately an explicitly-tracked Set, not a name-matching
+ * heuristic (e.g. "does this key look like `<structural metric>{scenario:x}`?").
+ * A heuristic would misclassify a profile's own tagged SLO — e.g.
+ * `send_duration{scenario:auditd}: p(99)<250` — as structural purely by
+ * shape, and a consumer (Task 9's summary) that uses this to exclude
+ * structural plumbing from the run's verdict would then silently drop a real
+ * SLO. Tracking the actual generated-and-used keys avoids that: a key a
+ * profile overrides is never added here, because its value at that key is no
+ * longer ours.
+ *
+ * Safe under k6's re-evaluation semantics: `buildThresholds` is called
+ * exactly once per module evaluation (once in the live init runtime, once
+ * again in the fresh runtime k6 constructs to run `handleSummary`, which
+ * re-executes this module top to bottom before invoking the handler) — so by
+ * the time a consumer reads `isStructuralThreshold`, this set already
+ * reflects that same call.
+ */
+let structuralKeys = new Set<string>();
+
+export function isStructuralThreshold(name: string): boolean {
+  return structuralKeys.has(name);
+}
 
 const ABORT_DELAY = '30s';
 
@@ -33,6 +95,21 @@ export function buildThresholds(input: ThresholdInput): Record<string, Threshold
         : expr,
     ];
   }
+
+  // One structural threshold per metric per active type — see
+  // STRUCTURAL_EXPRESSIONS. A profile threshold already occupying this exact
+  // tagged key wins (real SLO beats plumbing); such a key is left out of
+  // generatedKeys so isStructuralThreshold does not misclassify it.
+  const generatedKeys = new Set<string>();
+  for (const type of input.active_types ?? []) {
+    for (const [metric, expr] of Object.entries(STRUCTURAL_EXPRESSIONS)) {
+      const key = `${metric}{scenario:${type}}`;
+      if (key in out) continue;
+      out[key] = [expr];
+      generatedKeys.add(key);
+    }
+  }
+  structuralKeys = generatedKeys;
 
   // Applied last so they cannot be overwritten.
   for (const [name, exprs] of Object.entries(VALIDITY_THRESHOLDS)) {
