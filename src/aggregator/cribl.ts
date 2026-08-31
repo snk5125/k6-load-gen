@@ -61,6 +61,13 @@ function buildFunctions(def: LogTypeDef, artifact: ParseArtifact): CriblFunction
         filter: 'true',
         conf: { regex: artifact.prefixPattern, srcField: '_raw' },
       });
+      // Cribl's built-in kvp serde owns its own quoting rules, the same
+      // way pairPattern owns Vector's — but its defaults must agree with
+      // formatKvValue (src/logtypes/families/kv-audit.ts:28-34) on three
+      // characters: pair delimiter (space), quote char (`"`), and escape
+      // char (`\`). That agreement is currently implicit (delegated to
+      // Cribl's defaults, not asserted anywhere) — Task 6's manual check
+      // is what actually verifies it against a real instance.
       fns.push({
         id: 'serde',
         filter: 'true',
@@ -127,6 +134,15 @@ function buildFunctions(def: LogTypeDef, artifact: ParseArtifact): CriblFunction
  * `ip` fields are left alone: the extracted string already is the address,
  * and Cribl has no distinct IP type to coerce into. `string` fields (and
  * fields with no `parse` at all) are likewise left alone.
+ *
+ * `timestamp` coerces to an epoch-ms *number* (`Date.parse`), whereas the
+ * Vector renderer's `to_timestamp!` yields VRL's native Timestamp *type* —
+ * the two disagree on representation for the same field. Unreachable
+ * today (no definition uses `timestamp`), and left this way rather than
+ * forced into a false equivalence: Cribl's JS eval engine has no distinct
+ * Timestamp type to target, so epoch-ms is the closest native fit, not a
+ * shortcut. If a definition ever adds a `timestamp` field, whatever
+ * consumes both renderers' output needs to know this asymmetry exists.
  */
 function coercionEntries(fields: LogTypeField[]): Array<{ name: string; value: string }> {
   const entries: Array<{ name: string; value: string }> = [];

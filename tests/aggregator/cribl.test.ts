@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { renderCriblPipeline } from '../../src/aggregator/cribl.ts';
 import { LOG_TYPES } from '../../src/logtypes/registry.ts';
+import { FAMILIES } from '../../src/logtypes/families/index.ts';
 
 const pipeline = (name: string) => JSON.parse(renderCriblPipeline(LOG_TYPES[name]).content);
 
@@ -40,6 +41,26 @@ describe('renderCriblPipeline', () => {
   it('throws naming the family when one has no renderer case', () => {
     const bogus = { ...LOG_TYPES.auditd, family: 'not-a-family' } as never;
     expect(() => renderCriblPipeline(bogus)).toThrow(/not-a-family/);
+  });
+
+  it('throws from its own switch when the artifact kind itself is unhandled', () => {
+    // The test above only exercises the FAMILIES Proxy's guard (an
+    // unregistered family name) — it never reaches renderCriblPipeline's
+    // own switch. Register a real (stub) family whose parseArtifact
+    // returns a kind the switch has no case for, so the `default` arm is
+    // what actually fires this time.
+    const STUB = 'stub-unhandled-kind' as never;
+    const registry = FAMILIES as unknown as Record<string, unknown>;
+    registry[STUB] = {
+      serialize: () => '',
+      parseArtifact: () => ({ kind: 'not-a-real-kind' }),
+    };
+    try {
+      const bogus = { ...LOG_TYPES.auditd, family: STUB } as never;
+      expect(() => renderCriblPipeline(bogus)).toThrow(/not-a-real-kind/);
+    } finally {
+      delete registry[STUB];
+    }
   });
 
   it('is deterministic', () => {
