@@ -1,6 +1,15 @@
 import { VALIDITY_THRESHOLDS, STRUCTURAL_EXPRESSIONS, isStructuralThreshold } from '../metrics/thresholds.ts';
 
-export const SCHEMA_VERSION = 1;
+// Bumped from 1: `thresholds` changed shape from a flat map of every
+// declared threshold to `{ slo: [...], structural_count }`, and `run` grew
+// `active_types`, and this summary grew `types` (the per-type breakdown).
+// A consumer written for schema_version 1 that reads `thresholds` as a flat
+// map (e.g. `Object.values(thresholds)`) silently computes garbage against
+// the new shape rather than erroring — indexRecord (src/storage/keys.ts)
+// was exactly that consumer, and did exactly that, until it was fixed to
+// read `thresholds.slo`. The version bump lets any OTHER such consumer
+// detect the break instead of silently misreading the new shape.
+export const SCHEMA_VERSION = 2;
 // Exported so a multi-type caller (src/main.ts) can divide this budget
 // across active types instead of letting one type's batch fill it entirely.
 export const MAX_PAYLOAD_SAMPLE = 10;

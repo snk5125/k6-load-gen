@@ -78,6 +78,19 @@ export function indexRecord(summary: Record<string, unknown>): Record<string, Sc
   const rate = (summary.rate ?? {}) as Record<string, unknown>;
   const cfg = (summary.resolved_config ?? {}) as Record<string, unknown>;
   const target = (cfg.target ?? {}) as Record<string, unknown>;
+  // Since the profile grew a `types` map (Task 6), `resolved_config.scenario`
+  // no longer exists — it is REJECTED at validation (schema.ts's legacy-shape
+  // check), so every real run now had this column silently reading as null.
+  // Same class of defect as the old flat-map read of `thresholds` (see
+  // SCHEMA_VERSION above): a shape changed under a reader that kept the old
+  // assumption. `scenario` now lives per type on TypeConfig, so this column
+  // becomes a comma-joined list of every declared type's scenario — e.g.
+  // "soak,sweep,spike" for mixed-estate.json — rather than a single value
+  // that no longer has one unambiguous meaning for a multi-type profile.
+  const cfgTypes = (cfg.types ?? {}) as Record<string, { scenario?: unknown }>;
+  const scenarios = Object.values(cfgTypes)
+    .map((t) => (t && typeof t.scenario === 'string' ? t.scenario : null))
+    .filter((s): s is string => s !== null);
   const metrics = (summary.metrics ?? {}) as Record<string, Record<string, number>>;
   const validity = (summary.validity ?? {}) as Record<string, unknown>;
   // Since Task 9, summary.thresholds is { slo: [...], structural_count } —
@@ -102,7 +115,7 @@ export function indexRecord(summary: Record<string, unknown>): Record<string, Sc
     gen_count: num(gen.gen_count),
     profile: (cfg.name as string) ?? null,
     transport: (target.transport as string) ?? null,
-    scenario: (cfg.scenario as string) ?? null,
+    scenario: scenarios.length > 0 ? scenarios.join(',') : null,
     requested_eps: num(rate.requested_eps),
     achieved_eps: num(rate.achieved_eps),
     delta_pct: num(rate.delta_pct),

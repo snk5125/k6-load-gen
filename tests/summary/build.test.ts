@@ -44,7 +44,7 @@ const base = {
 describe('buildSummary', () => {
   it('stamps schema_version and run metadata', () => {
     const s = buildSummary(input(k6Metrics()));
-    expect(s.schema_version).toBe(1);
+    expect(s.schema_version).toBe(2);
     expect(s.run.run_id).toBe('run-1');
     expect(s.run.duration_sec).toBe(600);
   });
