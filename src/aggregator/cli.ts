@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { LOG_TYPES } from '../logtypes/registry.ts';
 import { renderVectorTransform } from './vector.ts';
 import { renderCriblPipeline } from './cribl.ts';
@@ -33,6 +33,15 @@ export function generate(): void {
   }
 }
 
-if (typeof process !== 'undefined' && process.argv[1] && process.argv[1].includes('cli')) {
+// A substring match on process.argv[1] (the previous check here) rewrites
+// the committed tree as a side effect of merely importing this module from
+// any checkout path that happens to contain "cli" — comparing resolved URLs
+// is the actual "am I the entrypoint" check (whole-branch review, promoted
+// minor: src/aggregator/cli.ts:36).
+if (
+  typeof process !== 'undefined' &&
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   generate();
 }
