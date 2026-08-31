@@ -127,9 +127,12 @@ full validation rules).
 
 | Option | Default | Purpose |
 |---|---|---|
-| `plaintext` | `false` | skip TLS |
-| `timeout` | — | per-call timeout, e.g. `"10s"` |
+| `plaintext` | `true` | when `true`, skip TLS and connect in cleartext; set `false` to require TLS |
+| `timeout` | `"10s"` | per-call timeout |
 | `resource_attributes` | — | key/value pairs attached to the OTLP `Resource` |
+
+**The default is `plaintext: true` — TLS is skipped unless a profile explicitly sets
+`plaintext: false`.** Do not assume a profile that omits this option is encrypted in transit.
 
 ### `otlp-http`
 
@@ -161,6 +164,10 @@ compresses the body after handing it a string and does not report the compressed
 the only number available is the *uncompressed* size — reporting that as the wire size would be
 exactly the confident-wrong-number `SendResult.wire_bytes` exists to prevent.
 
+**The `gzip: true` path is unverified.** It is not covered by the unit suite (nothing that calls
+`k6/http` is), and the live verification run against a real HEC listener used `gzip: false`. Treat
+compressed HEC delivery as untested until it has been exercised against a real listener.
+
 ### `syslog`
 
 | Option | Default | Purpose |
@@ -185,6 +192,28 @@ against `syslog`:
   connections/sec — ephemeral source ports run out faster than `TIME_WAIT` clears them. Push past
   that ceiling and `connect()` itself starts failing, which shows up in the run's metrics looking
   exactly like a receiver-side problem. See `src/transports/syslog.ts` for the full reasoning.
+
+Because every batch pays a fresh handshake, `syslog`'s `send_duration` threshold is not comparable
+to the other transports' — `otlp-grpc`, `otlp-http` and `hec` measure a request over an
+already-established connection (or, for `otlp-grpc`, a connect-once client), so their per-call
+budgets can be tight. `syslog`'s per-call time includes a TCP handshake and, with `tls: true`, a TLS
+handshake on top of it, so the shipped `profiles/syslog.json` threshold is set looser than the
+HTTP/gRPC transports' to leave room for that — see the profile for the current value.
+
+**Delivery has been verified live; strict-receiver conformance has not.** The live check used `nc`
+listening on a TCP port, which confirms framing and end-to-end delivery but says nothing about
+whether a real syslog daemon would accept the message. Two known gaps remain undocumented-away
+by that check: the structured-data ID emitted for the `[meta ...]` block does not follow RFC 5424
+§6.3.2 (which wants `name@<enterprise-number>` for anything with custom parameters, not a bare
+`meta`), and no UTF-8 BOM precedes MSG as §6.4 recommends. Neither is fixed here — see "Do NOT fix"
+in the branch's review ledger — but a reader picking `syslog` against a strict receiver should know
+both before assuming conformance.
+
+### `null`
+
+| Option | Default | Purpose |
+|---|---|---|
+| `count_bytes` | `true` | measure `wire_bytes` by summing event body lengths; set `false` to report `wire_bytes: null` instead |
 
 ## Building
 
