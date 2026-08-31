@@ -1,7 +1,9 @@
 import { VALIDITY_THRESHOLDS } from '../metrics/thresholds.ts';
 
 export const SCHEMA_VERSION = 1;
-const MAX_PAYLOAD_SAMPLE = 10;
+// Exported so a multi-type caller (src/main.ts) can divide this budget
+// across active types instead of letting one type's batch fill it entirely.
+export const MAX_PAYLOAD_SAMPLE = 10;
 
 export interface RunSummary {
   schema_version: number;

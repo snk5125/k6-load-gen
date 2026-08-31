@@ -114,6 +114,22 @@ export function readTypeOverrides(profileTypes: string[]): TypeOverridesResult {
       .split(',')
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
+    // A profile that runs nothing is a configuration error, not an empty
+    // run — same rule schema.ts already enforces on an empty `types` map.
+    // TYPES="," (or ",,") passes the initial non-empty-string check above
+    // but filters down to nothing, so it needs its own guard.
+    if (requested.length === 0) {
+      throw new Error(`TYPES="${typesVar}" names no log types; unset TYPES to run every declared type`);
+    }
+    const duplicates = requested.filter((t, i) => requested.indexOf(t) !== i);
+    if (duplicates.length > 0) {
+      // A duplicate would resolve into one k6 scenario (the map key can
+      // only appear once) while every EPS/sample aggregate in main.ts
+      // double-counts it — a silent, wrong number rather than a loud error.
+      throw new Error(
+        `TYPES names "${[...new Set(duplicates)].join(', ')}" more than once; each type may appear at most once`,
+      );
+    }
     const unknown = requested.filter((t) => !profileTypes.includes(t));
     if (unknown.length > 0) {
       throw new Error(
@@ -169,6 +185,29 @@ export function readTypeOverrides(profileTypes: string[]): TypeOverridesResult {
       o.batch_size = num(varNames.batch_size, raw.batch_size);
     }
     overrides[t] = o;
+  }
+
+  // The loop above only catches a KNOWN type's prefix set while inactive
+  // (e.g. CLOUDTRAIL_RATE when TYPES=auditd) — it can't catch a prefix that
+  // matches no declared type at all, e.g. CLOUDTRAILL_RATE (typo). That is
+  // the more likely mistake, and it is the half the loop above doesn't
+  // cover, so scan every set env var for the `_RATE`/`_KNEE_EPS`/
+  // `_SCENARIO`/`_BATCH_SIZE` shape and warn on any whose prefix isn't one
+  // of this profile's own type prefixes.
+  const validPrefixes = new Set(profileTypes.map(envPrefixFor));
+  const OVERRIDE_SUFFIXES = ['BATCH_SIZE', 'KNEE_EPS', 'SCENARIO', 'RATE'] as const;
+  for (const key of Object.keys(__ENV)) {
+    for (const suffix of OVERRIDE_SUFFIXES) {
+      if (!key.endsWith(`_${suffix}`)) continue;
+      const prefix = key.slice(0, key.length - suffix.length - 1);
+      if (prefix.length > 0 && !validPrefixes.has(prefix)) {
+        warnings.push(
+          `${key} looks like a per-type override, but "${prefix}" does not match any of this ` +
+            `profile's log types (valid prefixes: ${[...validPrefixes].join(', ')}); it will have no effect`,
+        );
+      }
+      break; // the four suffixes are mutually exclusive — at most one matches
+    }
   }
 
   return { active, overrides, warnings };

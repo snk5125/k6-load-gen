@@ -7,7 +7,7 @@ import { redactProfile } from './config/redact.ts';
 import { buildThresholds } from './metrics/thresholds.ts';
 import { buildGenerator, type BatchGenerator } from './payload/generator.ts';
 import { createTransport } from './transports/registry.ts';
-import { buildSummary } from './summary/build.ts';
+import { buildSummary, MAX_PAYLOAD_SAMPLE } from './summary/build.ts';
 import { renderSummary } from './summary/render.ts';
 import {
   eventsAttempted,
@@ -106,7 +106,15 @@ const transport = createTransport(run.profile.target.transport, {
   options: run.profile.target.options,
 });
 
-const PAYLOAD_SAMPLE = Object.values(GENERATORS).flatMap((g) => g.expectedAt(0));
+// Split the MAX_PAYLOAD_SAMPLE budget roughly evenly across active types
+// instead of concatenating whole batches — a concatenation would let
+// whichever type happens first (e.g. the largest batch_size) fill the
+// entire published sample, leaving the other active types with zero
+// evidence of what they emitted in the run's own summary.
+const SAMPLE_PER_TYPE = Math.max(1, Math.ceil(MAX_PAYLOAD_SAMPLE / Math.max(1, run.active_types.length)));
+const PAYLOAD_SAMPLE = run.active_types.flatMap((type) =>
+  GENERATORS[type].expectedAt(0).slice(0, SAMPLE_PER_TYPE),
+);
 
 // Bounded error logging: an unbounded console.warn against a failing target
 // floods the log tier and slows the generator enough to corrupt the run.

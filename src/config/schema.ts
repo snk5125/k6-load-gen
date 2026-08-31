@@ -260,12 +260,23 @@ export function validateProfile(raw: unknown): ValidationResult {
     }
   }
 
-  // The legacy single-payload shape is dropped, not supported alongside —
-  // this message is the only migration documentation a user gets.
-  if ('payload' in raw && raw.payload !== undefined) {
-    errors.push(
-      'payload: profile-level "payload" is no longer supported; declare one or more log types under "types" instead',
-    );
+  // The legacy single-{payload,anchor,scenario} shape is dropped, not
+  // supported alongside — these messages are the only migration
+  // documentation a user gets. All three are checked (not just `payload`):
+  // a user who adds `types` but leaves the old top-level `anchor` or
+  // `scenario` in place must not validate silently — those two keys are
+  // simply ignored by everything downstream once `types` is present, which
+  // would otherwise look like a working profile that quietly runs
+  // different rates/shapes than the ones still sitting at the top level.
+  const LEGACY_TOP_LEVEL_KEYS: Record<string, string> = {
+    payload: 'declare one or more log types under "types" instead',
+    anchor: 'move it into the "anchor" of each entry under "types" instead',
+    scenario: 'move it into the "scenario" of each entry under "types" instead',
+  };
+  for (const [key, guidance] of Object.entries(LEGACY_TOP_LEVEL_KEYS)) {
+    if (key in raw && raw[key] !== undefined) {
+      errors.push(`${key}: profile-level "${key}" is no longer supported; ${guidance}`);
+    }
   }
 
   // types

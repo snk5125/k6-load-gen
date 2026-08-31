@@ -16,8 +16,6 @@ docker run --rm \
   -e PROFILE=otlp-grpc \
   -e RUN_ID=sweep-1 \
   -e TARGET=collector.example:4317 \
-  -e SCENARIO=sweep \
-  -e KNEE_EPS=5000 \
   k6-load-gen:latest
 ```
 
@@ -36,26 +34,22 @@ overridden** — configuration is environment only.
 
 ### Profiles
 
-`profiles/*.json`, bundled into the image. A profile declares the transport and endpoint, the
-payload shape, the rate anchor, the scenario, and any thresholds:
+`profiles/*.json`, bundled into the image. A profile declares the transport and endpoint, one or
+more log types to generate (each with its own rate anchor, scenario and batch size), and any
+thresholds:
 
 ```jsonc
 {
   "name": "otlp-grpc",
   "target": { "transport": "otlp-grpc", "endpoint": "collector.example:4317",
               "options": { "plaintext": true, "timeout": "10s" } },
-  "payload": {
-    "template": "json-app",
-    "batch_size": 100,
-    "fields": {
-      "host":     { "cardinality": 500, "distribution": "zipf" },
-      "level":    { "values": ["INFO", "WARN", "ERROR"], "weights": [0.8, 0.15, 0.05] },
-      "trace_id": { "cardinality": "unbounded" },
-      "message":  { "cardinality": 50, "pad_to": 512 }
+  "types": {
+    "json-app": {
+      "batch_size": 100,
+      "anchor":     { "mode": "knee", "knee_eps": 5000 },
+      "scenario":   "sweep"
     }
   },
-  "anchor":     { "mode": "knee", "knee_eps": 5000 },
-  "scenario":   "sweep",
   "thresholds": { "send_failures": "rate<0.001", "send_duration": "p(99)<250" }
 }
 ```

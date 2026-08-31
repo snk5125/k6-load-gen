@@ -118,10 +118,10 @@ describe('resolveRun — per-type overrides win over the TypeConfig', () => {
       active: ['auditd'],
       overrides: { auditd: { scenario: 'spike' } },
     });
-    // spike is a shared-iterations-free ramping shape; assert indirectly via
-    // the fact resolution succeeded with a different shape than "sweep"
-    // would have produced (soak below asserts the executor kind).
-    expect(r.types.auditd.k6).toBeTypeOf('object');
+    // r.profile carries the applied (post-override) TypeConfig — see
+    // resolveRun's mergedTypes — so this is directly observable, not just
+    // "resolution didn't throw".
+    expect(r.profile.types.auditd.scenario).toBe('spike');
   });
 
   it('rejects an unknown scenario override, naming the type', () => {
@@ -137,9 +137,7 @@ describe('resolveRun — per-type overrides win over the TypeConfig', () => {
       active: ['auditd'],
       overrides: { auditd: { knee_eps: 9000 } },
     });
-    // knee_eps is folded into the k6 scenario's stage rates, not surfaced
-    // raw — assert via requested_peak_eps scaling with the new anchor.
-    expect(r.types.auditd.requested_peak_eps).toBeGreaterThan(0);
+    expect(r.profile.types.auditd.anchor).toEqual({ mode: 'knee', knee_eps: 9000 });
   });
 
   it('rate switches the anchor to absolute mode and wins over knee_eps', () => {

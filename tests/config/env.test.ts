@@ -160,4 +160,36 @@ describe('readTypeOverrides', () => {
     setEnv({ TYPES: '' });
     expect(readTypeOverrides(['auditd', 'cloudtrail']).active).toEqual(['auditd', 'cloudtrail']);
   });
+
+  it('throws when TYPES is set but names nothing (e.g. a bare comma)', () => {
+    // A profile that runs nothing is a configuration error, not an empty
+    // run — same rule schema.ts enforces on an empty "types" map. TYPES=","
+    // passes the "is it the empty string" check but resolves to zero names.
+    setEnv({ TYPES: ',' });
+    expect(() => readTypeOverrides(['auditd', 'cloudtrail'])).toThrow(/TYPES/);
+  });
+
+  it('throws when TYPES names the same type twice', () => {
+    // A duplicate would resolve into one k6 scenario (the map key can only
+    // appear once) while every EPS/sample aggregate in main.ts would
+    // double-count it — a silent, wrong number rather than a loud error.
+    setEnv({ TYPES: 'auditd,auditd' });
+    expect(() => readTypeOverrides(['auditd', 'cloudtrail'])).toThrow(/auditd/);
+  });
+
+  it('warns on a typo in a per-type prefix that matches no declared type', () => {
+    // CLOUDTRAILL_RATE (double L) — the not-active check above only covers
+    // a KNOWN type's prefix while inactive; this is the other half: a
+    // prefix that matches no declared type at all, which is the likelier
+    // typo to actually make.
+    setEnv({ CLOUDTRAILL_RATE: '500' });
+    const r = readTypeOverrides(['cloudtrail']);
+    expect(r.warnings.join(' ')).toMatch(/CLOUDTRAILL_RATE/);
+  });
+
+  it('does not warn about a variable whose prefix legitimately matches a declared type', () => {
+    setEnv({ AUDITD_RATE: '5000' });
+    const r = readTypeOverrides(['auditd']);
+    expect(r.warnings).toEqual([]);
+  });
 });

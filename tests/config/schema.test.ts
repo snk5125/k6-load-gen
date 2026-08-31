@@ -96,6 +96,23 @@ describe('validateProfile — types map', () => {
     expect(r.errors.join(' ')).toMatch(/payload.*no longer supported.*types/i);
   });
 
+  it('rejects a leftover top-level anchor even when a valid types map is present', () => {
+    // A half-migrated profile — types added, but the old top-level anchor
+    // never removed — must not validate silently: everything downstream
+    // ignores that stale top-level anchor once "types" exists, so a
+    // profile like this would quietly run a different rate than the one
+    // still sitting (and readable) at the top level.
+    const r = validateProfile({ ...base, anchor: { mode: 'absolute', base_eps: 100 } });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/anchor.*no longer supported.*types/i);
+  });
+
+  it('rejects a leftover top-level scenario even when a valid types map is present', () => {
+    const r = validateProfile({ ...base, scenario: 'sweep' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/scenario.*no longer supported.*types/i);
+  });
+
   it('rejects a types map naming an unknown log type', () => {
     const r = validateProfile({ ...base, types: { auditdd: validTypes.auditd } });
     expect(r.errors.join(' ')).toMatch(/auditdd.*available.*auditd/s);
