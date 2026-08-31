@@ -6,7 +6,7 @@ describe('scaffolding', () => {
     const spec: FieldSpec = { cardinality: 10, distribution: 'zipf' };
     const event: LogEvent = {
       ts_ms: 0, severity: 'INFO', body: 'x', fields: {},
-      run_id: 'r', gen_index: 0, seq: 0,
+      run_id: 'r', gen_index: 0, type: 'x', seq: 0,
     };
     expect(spec).toBeDefined();
     expect(event.seq).toBe(0);

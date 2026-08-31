@@ -32,6 +32,18 @@ describe('buildGenerator', () => {
     }
   });
 
+  // Identity is (run_id, gen_index, type, seq), not just (run_id, gen_index,
+  // seq) — exec.scenario.iterationInTest (main.ts) restarts at 0 PER
+  // SCENARIO, so in a multi-type run distinct events from different types
+  // can share the same (run_id, gen_index, seq). `type` is what makes the
+  // full tuple collision-safe; every event must carry it.
+  it('stamps every event with its log type, taken from the spec template', () => {
+    const g = buildGenerator(spec, { run_id: 'r', gen_index: 0 });
+    for (const e of g.batchAt(0, 1000)) {
+      expect(e.type).toBe('json-app');
+    }
+  });
+
   it('never collides seq across generators in a fleet', () => {
     const g0 = buildGenerator(spec, { run_id: 'r', gen_index: 0 });
     const g1 = buildGenerator(spec, { run_id: 'r', gen_index: 1 });

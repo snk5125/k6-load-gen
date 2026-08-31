@@ -63,6 +63,10 @@ export function buildGenerator(
         fields,
         run_id: ctx.run_id,
         gen_index: ctx.gen_index,
+        // spec.template IS the log type name (see buildPayloadSpec in
+        // src/config/resolve.ts: `template: typeName`) — no separate
+        // "which type" input is needed here.
+        type: spec.template,
         seq,
       };
     }
