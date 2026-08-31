@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { kvAudit } from '../../src/logtypes/families/kv-audit.ts';
 import { auditd } from '../../src/logtypes/definitions/auditd.ts';
 import { parseWithArtifact } from './parse-with-artifact.ts';
+import { buildField } from '../../src/payload/fields.ts';
 
 const vals = { arch: 'c000003e', syscall: '59', success: 'yes', uid: '1042', exe: '/usr/bin/host-0731' };
 
@@ -89,5 +90,32 @@ describe('kv-audit round trip via parseWithArtifact', () => {
     const artifact = kvAudit.parseArtifact(auditd);
     const parsed = parseWithArtifact(artifact, body);
     expect(parsed.exe).toBe('a b"c');
+  });
+});
+
+describe('kv-audit round trip using the real generator', () => {
+  // Every test above hand-supplies field values as literals. This builds
+  // values the way the real generator does (buildField, driven by auditd's
+  // own FieldSpecs) and proves every one survives serialize + the prefix
+  // pattern + kv pair splitting, across several ordinals so a value that
+  // only appears at some ordinals is still exercised. The kv grammar
+  // accepts any non-whitespace token unquoted (only a space/quote/equals
+  // forces quoting), and every auditd field's default `${name}-${i}`
+  // values, plus exe's explicit base36 suffix, are exactly that — so
+  // nothing here needed a FieldSpec.prefix change, unlike nginx-access's
+  // body_bytes_sent.
+  it('round-trips values built by buildField from auditd\'s own FieldSpecs', () => {
+    const generators = Object.fromEntries(
+      auditd.fields.map((f) => [f.name, buildField(f.name, f.spec)]),
+    );
+    const artifact = kvAudit.parseArtifact(auditd);
+
+    for (const seq of [0, 1, 7, 250, 799, 12345]) {
+      const values = Object.fromEntries(
+        auditd.fields.map((f) => [f.name, generators[f.name].valueAt(seq)]),
+      );
+      const body = kvAudit.serialize(auditd, values, 1788130943351, seq);
+      expect(parseWithArtifact(artifact, body)).toMatchObject(values);
+    }
   });
 });

@@ -1,7 +1,7 @@
 export type Distribution = 'uniform' | 'zipf';
 
 export type FieldSpec =
-  | { cardinality: number; distribution?: Distribution; pad_to?: number }
+  | { cardinality: number; distribution?: Distribution; pad_to?: number; prefix?: string }
   | { cardinality: 'unbounded'; prefix?: string }
   | { values: string[]; weights?: number[] };
 

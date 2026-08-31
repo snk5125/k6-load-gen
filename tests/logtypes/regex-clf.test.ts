@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { regexClf } from '../../src/logtypes/families/regex-clf.ts';
 import { nginxAccess } from '../../src/logtypes/definitions/nginx-access.ts';
 import { parseWithArtifact } from './parse-with-artifact.ts';
+import { buildField } from '../../src/payload/fields.ts';
 
 const vals = {
   remote_addr: '10.0.4.31', request_method: 'GET', request_uri: '/api/v2/items?id=8831',
@@ -73,5 +74,30 @@ describe('regex-clf round trip via parseWithArtifact', () => {
     const artifact = regexClf.parseArtifact(nginxAccess);
     const parsed = parseWithArtifact(artifact, body);
     expect(parsed.http_user_agent).toBe('a b');
+  });
+});
+
+describe('regex-clf round trip using the real generator', () => {
+  // Every test above hand-supplies field values as literals like '4213' or
+  // 'curl/8.4.0'. That can't catch a definition whose FieldSpec produces
+  // values its own pattern can't parse — buildField's default naming scheme
+  // is `${name}-${i}`, which is not `\d+`. This test builds values the way
+  // the real generator does (buildField, driven by nginx-access's own
+  // FieldSpecs) and proves every one of them survives serialize + the
+  // pattern, across several ordinals so a value that only appears at some
+  // ordinals is still exercised.
+  it('round-trips values built by buildField from nginx-access\'s own FieldSpecs', () => {
+    const generators = Object.fromEntries(
+      nginxAccess.fields.map((f) => [f.name, buildField(f.name, f.spec)]),
+    );
+    const artifact = regexClf.parseArtifact(nginxAccess);
+
+    for (const seq of [0, 1, 7, 250, 799, 12345]) {
+      const values = Object.fromEntries(
+        nginxAccess.fields.map((f) => [f.name, generators[f.name].valueAt(seq)]),
+      );
+      const body = regexClf.serialize(nginxAccess, values, 1788130943351, seq);
+      expect(parseWithArtifact(artifact, body)).toMatchObject(values);
+    }
   });
 });

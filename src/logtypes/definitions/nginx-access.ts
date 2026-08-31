@@ -27,7 +27,9 @@ export const nginxAccess: LogTypeDef = {
       name: 'status',
       spec: { values: ['200', '301', '404', '500'], weights: [0.85, 0.05, 0.07, 0.03] },
     },
-    { name: 'body_bytes_sent', spec: { cardinality: 800, distribution: 'zipf' } },
+    // prefix: '' — the pattern requires \d+ here; the default `${name}-${i}`
+    // naming scheme is not digits. See FieldSpec.prefix in payload/types.ts.
+    { name: 'body_bytes_sent', spec: { cardinality: 800, distribution: 'zipf', prefix: '' } },
     { name: 'http_referer', spec: { values: ['-'] } },
     { name: 'http_user_agent', spec: { cardinality: 50 } },
   ],
