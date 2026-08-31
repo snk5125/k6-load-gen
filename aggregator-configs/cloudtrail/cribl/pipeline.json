@@ -1,0 +1,66 @@
+{
+  "id": "cloudtrail",
+  "conf": {
+    "functions": [
+      {
+        "id": "serde",
+        "filter": "true",
+        "conf": {
+          "type": "json",
+          "srcField": "_raw",
+          "mode": "extract"
+        }
+      },
+      {
+        "id": "eval",
+        "filter": "true",
+        "conf": {
+          "add": [
+            {
+              "name": "eventVersion",
+              "value": "Records[0].eventVersion"
+            },
+            {
+              "name": "eventTime",
+              "value": "Records[0].eventTime"
+            },
+            {
+              "name": "userIdentity.type",
+              "value": "Records[0].userIdentity.type"
+            },
+            {
+              "name": "userIdentity.arn",
+              "value": "Records[0].userIdentity.arn"
+            },
+            {
+              "name": "eventName",
+              "value": "Records[0].eventName"
+            },
+            {
+              "name": "awsRegion",
+              "value": "Records[0].awsRegion"
+            },
+            {
+              "name": "sourceIPAddress",
+              "value": "Records[0].sourceIPAddress"
+            },
+            {
+              "name": "eventID",
+              "value": "Records[0].eventID"
+            }
+          ]
+        }
+      },
+      {
+        "id": "eval",
+        "filter": "true",
+        "conf": {
+          "remove": [
+            "Records",
+            "_raw"
+          ]
+        }
+      }
+    ]
+  }
+}

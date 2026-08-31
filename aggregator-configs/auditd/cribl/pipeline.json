@@ -1,0 +1,58 @@
+{
+  "id": "auditd",
+  "conf": {
+    "functions": [
+      {
+        "id": "regex_extract",
+        "filter": "true",
+        "conf": {
+          "regex": "/^type=(?<type>\\S+) msg=audit\\((?<epoch>\\d+\\.\\d{3}):(?<serial>\\d+)\\): (?<rest>.*)$/",
+          "source": "_raw"
+        }
+      },
+      {
+        "id": "serde",
+        "filter": "true",
+        "conf": {
+          "type": "kvp",
+          "srcField": "rest",
+          "mode": "extract"
+        }
+      },
+      {
+        "id": "eval",
+        "filter": "true",
+        "conf": {
+          "remove": [
+            "rest",
+            "_raw"
+          ]
+        }
+      },
+      {
+        "id": "eval",
+        "filter": "true",
+        "conf": {
+          "add": [
+            {
+              "name": "syscall",
+              "value": "Number(syscall)"
+            },
+            {
+              "name": "exit",
+              "value": "Number(exit)"
+            },
+            {
+              "name": "uid",
+              "value": "Number(uid)"
+            },
+            {
+              "name": "gid",
+              "value": "Number(gid)"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

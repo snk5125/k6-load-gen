@@ -42,8 +42,13 @@ describe('json-nested', () => {
   });
 
   it('reports a nested json parse artifact naming the envelope', () => {
+    // extraFields mirrors what serialize() writes onto the record besides
+    // def.fields: cloudtrail's one constant (eventVersion) plus the
+    // always-derived eventTime — see json-nested.ts's parseArtifact.
     expect(jsonNested.parseArtifact(cloudtrail)).toEqual({
-      kind: 'json', nested: true, envelope: { wrap: 'Records' },
+      kind: 'json',
+      nested: true,
+      envelope: { wrap: 'Records', extraFields: ['eventVersion', 'eventTime'] },
     });
   });
 });

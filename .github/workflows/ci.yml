@@ -40,6 +40,14 @@ jobs:
       - name: Test
         run: npm test
 
+      # A definition change that does not regenerate leaves stale configs
+      # committed — which is exactly the drift this sub-project exists to
+      # prevent. Regenerate and fail if anything moved.
+      - name: Aggregator configs are up to date
+        run: |
+          npm run aggregator-configs
+          git diff --exit-code -- aggregator-configs/
+
       # The bundles are what ship in the image. Building them here catches an
       # esbuild-level break that the unit tests would not.
       - name: Build CLI bundles
@@ -53,3 +61,31 @@ jobs:
           node dist/timeline-cli.js < /dev/null
           node dist/index-cli.js index <<< '{"run":{"run_id":"ci"}}' > /dev/null
           mv /tmp/nm node_modules
+
+  # Spec §7 calls for "Vector: Automated in CI"; this job is that gate — the
+  # drift gate above only proves the committed tree matches what the
+  # renderer emits today, never that either one is actually correct
+  # (change PATTERN in src/logtypes/families/regex-clf.ts so it no longer
+  # matches what serialize() writes, and the drift gate regenerates happily
+  # while every existing test stays green). A separate job from `verify` on
+  # purpose: a Docker/image-pull problem is a different failure class than a
+  # code or test problem, and this way a failure here doesn't obscure — or
+  # get obscured by — the fast feedback path.
+  vector-roundtrip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # GitHub-hosted ubuntu-latest runners carry Docker preinstalled — no
+      # separate Docker setup step needed. See tests/aggregator/roundtrip/
+      # README.md for what this proves (and does not).
+      - name: Containerised Vector round trip
+        run: tests/aggregator/roundtrip/run.sh

@@ -11,13 +11,40 @@ export const auditd: LogTypeDef = {
   constants: { type: 'SYSCALL' },
   severity: { const: 'INFO' },
   fields: [
-    { name: 'arch', spec: { cardinality: 2 } },
-    { name: 'syscall', spec: { cardinality: 40, distribution: 'zipf' } },
-    { name: 'success', spec: { values: ['yes', 'no'], weights: [0.95, 0.05] } },
-    { name: 'exit', spec: { cardinality: 15, distribution: 'zipf' } },
-    { name: 'uid', spec: { cardinality: 800, distribution: 'zipf' } },
-    { name: 'gid', spec: { cardinality: 200, distribution: 'zipf' } },
-    { name: 'exe', spec: { cardinality: 'unbounded', prefix: '/usr/bin/host-' } },
-    { name: 'key', spec: { cardinality: 10 } },
+    // arch is a hex token (c000003e), not a number — stays string.
+    { name: 'arch', spec: { cardinality: 2 }, parse: { type: 'string' } },
+    // prefix: '' — typed int below, so the pool must generate bare digits,
+    // not the default `${name}-${i}`. See FieldSpec.prefix in payload/types.ts.
+    {
+      name: 'syscall',
+      spec: { cardinality: 40, distribution: 'zipf', prefix: '' },
+      parse: { type: 'int' },
+    },
+    {
+      name: 'success',
+      spec: { values: ['yes', 'no'], weights: [0.95, 0.05] },
+      parse: { type: 'string', index: true },
+    },
+    {
+      name: 'exit',
+      spec: { cardinality: 15, distribution: 'zipf', prefix: '' },
+      parse: { type: 'int' },
+    },
+    {
+      name: 'uid',
+      spec: { cardinality: 800, distribution: 'zipf', prefix: '' },
+      parse: { type: 'int', index: true },
+    },
+    {
+      name: 'gid',
+      spec: { cardinality: 200, distribution: 'zipf', prefix: '' },
+      parse: { type: 'int' },
+    },
+    {
+      name: 'exe',
+      spec: { cardinality: 'unbounded', prefix: '/usr/bin/host-' },
+      parse: { type: 'string', index: true },
+    },
+    { name: 'key', spec: { cardinality: 10 }, parse: { type: 'string', index: true } },
   ],
 };

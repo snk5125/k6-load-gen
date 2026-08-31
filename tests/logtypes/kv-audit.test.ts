@@ -115,10 +115,12 @@ describe('kv-audit round trip using the real generator', () => {
   // pattern + kv pair splitting, across several ordinals so a value that
   // only appears at some ordinals is still exercised. The kv grammar
   // accepts any non-whitespace token unquoted (only a space/quote/equals
-  // forces quoting), and every auditd field's default `${name}-${i}`
-  // values, plus exe's explicit base36 suffix, are exactly that — so
-  // nothing here needed a FieldSpec.prefix change, unlike nginx-access's
-  // body_bytes_sent.
+  // forces quoting) — every auditd field's value is exactly that, whether
+  // it's the default `${name}-${i}` string, exe's explicit path prefix, or
+  // syscall/exit/uid/gid's bare digits (those four carry `prefix: ''`
+  // precisely so their `int`-typed values come out as plain numbers on the
+  // wire, not `${name}-${i}` — the same wire-format change nginx-access's
+  // body_bytes_sent needed).
   it('round-trips values built by buildField from auditd\'s own FieldSpecs', () => {
     const generators = Object.fromEntries(
       auditd.fields.map((f) => [f.name, buildField(f.name, f.spec)]),

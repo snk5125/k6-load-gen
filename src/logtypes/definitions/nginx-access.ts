@@ -15,22 +15,36 @@ export const nginxAccess: LogTypeDef = {
   family: 'regex-clf',
   severity: { const: 'INFO' },
   fields: [
-    { name: 'remote_addr', spec: { cardinality: 2000, distribution: 'zipf' } },
-    { name: 'remote_user', spec: { values: ['-'] } },
+    {
+      name: 'remote_addr',
+      spec: { cardinality: 2000, distribution: 'zipf' },
+      parse: { type: 'ip', index: true },
+    },
+    { name: 'remote_user', spec: { values: ['-'] }, parse: { type: 'string' } },
     {
       name: 'request_method',
       spec: { values: ['GET', 'POST', 'PUT', 'DELETE'], weights: [0.7, 0.2, 0.07, 0.03] },
+      parse: { type: 'string' },
     },
-    { name: 'request_uri', spec: { cardinality: 'unbounded', prefix: '/api/v2/items?id=' } },
-    { name: 'server_protocol', spec: { values: ['HTTP/1.1'] } },
+    {
+      name: 'request_uri',
+      spec: { cardinality: 'unbounded', prefix: '/api/v2/items?id=' },
+      parse: { type: 'string', index: true },
+    },
+    { name: 'server_protocol', spec: { values: ['HTTP/1.1'] }, parse: { type: 'string' } },
     {
       name: 'status',
       spec: { values: ['200', '301', '404', '500'], weights: [0.85, 0.05, 0.07, 0.03] },
+      parse: { type: 'int', index: true },
     },
     // prefix: '' — the pattern requires \d+ here; the default `${name}-${i}`
     // naming scheme is not digits. See FieldSpec.prefix in payload/types.ts.
-    { name: 'body_bytes_sent', spec: { cardinality: 800, distribution: 'zipf', prefix: '' } },
-    { name: 'http_referer', spec: { values: ['-'] } },
-    { name: 'http_user_agent', spec: { cardinality: 50 } },
+    {
+      name: 'body_bytes_sent',
+      spec: { cardinality: 800, distribution: 'zipf', prefix: '' },
+      parse: { type: 'int' },
+    },
+    { name: 'http_referer', spec: { values: ['-'] }, parse: { type: 'string' } },
+    { name: 'http_user_agent', spec: { cardinality: 50 }, parse: { type: 'string' } },
   ],
 };
