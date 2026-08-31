@@ -2,6 +2,7 @@ import http from 'k6/http';
 import type { SendResult, TransportFactory } from './types.ts';
 import type { LogEvent } from '../payload/types.ts';
 import { buildHecParams } from './hec-params.ts';
+import { classifyHttpResponse } from './http-response.ts';
 
 export const createHecTransport: TransportFactory = (cfg) => {
   const endpoint = cfg.endpoint;
@@ -59,7 +60,8 @@ export const createHecTransport: TransportFactory = (cfg) => {
         // module for why the distinction matters.
         const params = buildHecParams(headers, gzip);
         const res = http.post(url, body, params);
-        if (res.status >= 200 && res.status < 300) {
+        const classification = classifyHttpResponse(res.status, res.body, res.error);
+        if (classification.ok) {
           // With gzip on, `body.length` is the UNCOMPRESSED size — k6 compresses
           // after we hand it the string, and does not report the compressed
           // length. Reporting the uncompressed figure as wire size would be
@@ -67,7 +69,7 @@ export const createHecTransport: TransportFactory = (cfg) => {
           // contract exists to prevent, so report null instead.
           return { ok: true, status: res.status, wire_bytes: gzip ? null : body.length };
         }
-        return { ok: false, status: res.status, wire_bytes: null, error: String(res.body ?? '').slice(0, 500) };
+        return { ok: false, status: res.status, wire_bytes: null, error: classification.error };
       } catch (err) {
         return { ok: false, status: 'exception', wire_bytes: null, error: String(err) };
       }
