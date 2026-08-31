@@ -2,7 +2,7 @@ import { buildField, type FieldGenerator } from './fields.ts';
 import type { LogEvent, PayloadSpec } from './types.ts';
 import { FAMILIES } from '../logtypes/families/index.ts';
 import { LOG_TYPES } from '../logtypes/registry.ts';
-import type { LogTypeDef } from '../logtypes/types.ts';
+import { resolveSeverity } from '../logtypes/severity.ts';
 
 export type Template = (
   fields: Record<string, string>,
@@ -10,18 +10,11 @@ export type Template = (
   seq: number,
 ) => { severity: string; body: string };
 
-/** A def with no `severity` (or a `from` field the event lacks) falls back to 'INFO'. */
-function severityOf(def: LogTypeDef, fields: Record<string, string>): string {
-  if (!def.severity) return 'INFO';
-  if ('const' in def.severity) return def.severity.const;
-  return fields[def.severity.from] ?? 'INFO';
-}
-
 export const TEMPLATES: Record<string, Template> = Object.fromEntries(
   Object.values(LOG_TYPES).map((def) => [
     def.name,
     (fields: Record<string, string>, ts_ms: number, seq: number) => ({
-      severity: severityOf(def, fields),
+      severity: resolveSeverity(def, fields),
       body: FAMILIES[def.family].serialize(def, fields, ts_ms, seq),
     }),
   ]),

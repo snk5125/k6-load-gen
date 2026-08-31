@@ -18,4 +18,10 @@ describe('log type registry', () => {
       expect(Object.keys(FAMILIES)).toContain(def.family);
     }
   });
+
+  it('names the available families when one is not yet registered', () => {
+    // 'kv-audit' is a real FormatFamily (auditd, a later task) but has no
+    // module yet — the mirror of the type-name test above, on the family axis.
+    expect(() => FAMILIES['kv-audit']).toThrow(/kv-audit.*available.*json-flat/s);
+  });
 });
