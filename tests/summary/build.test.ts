@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildSummary } from '../../src/summary/build.ts';
 import { renderSummary } from '../../src/summary/render.ts';
+import { buildThresholds } from '../../src/metrics/thresholds.ts';
 
 const k6Metrics = (overrides: Record<string, unknown> = {}) => ({
   events_sent: { type: 'counter', values: { count: 50000, rate: 5000 } },
@@ -24,6 +25,21 @@ const input = (metrics: Record<string, unknown>) => ({
   payload_sample: Array.from({ length: 25 }, (_, i) => ({ seq: i })),
   warnings: [],
 });
+
+// Fields common to the per-type tests below, deliberately excluding
+// `metrics`/`active_types` so each test supplies its own.
+const base = {
+  run_id: 'run-1',
+  started_at: '2026-08-29T10:00:00.000Z',
+  ended_at: '2026-08-29T10:10:00.000Z',
+  k6_version: 'v2.2.0',
+  resolved_config: { name: 'p' },
+  gen_index: 0,
+  gen_count: 1,
+  rate: { requested_eps: 5000, achieved_eps: 5000, delta_pct: 0 },
+  payload_sample: [] as unknown[],
+  warnings: [] as string[],
+};
 
 describe('buildSummary', () => {
   it('stamps schema_version and run metadata', () => {
@@ -80,8 +96,8 @@ describe('buildSummary', () => {
     expect(s.validity.reasons).toEqual([]);
     expect(s.validity.dropped_iterations).toBe(0);
     // Not hidden — fully visible in the thresholds block and the rendered output.
-    expect(s.thresholds['send_failures:rate<0.001'].ok).toBe(false);
-    expect(s.thresholds['send_duration:p(99)<250'].ok).toBe(false);
+    expect(s.thresholds.slo.find((t) => t.metric === 'send_failures')?.ok).toBe(false);
+    expect(s.thresholds.slo.find((t) => t.metric === 'send_duration')?.ok).toBe(false);
     const out = renderSummary(s);
     expect(out).toMatch(/FAILED THRESHOLDS/);
     expect(out).toMatch(/send_failures rate<0\.001/);
@@ -92,7 +108,7 @@ describe('buildSummary', () => {
       dropped_iterations: { type: 'counter', values: { count: 17 }, thresholds: { 'count<1': { ok: false } } },
     })));
     expect(s.validity.valid).toBe(false);
-    expect(s.thresholds['dropped_iterations:count<1'].ok).toBe(false);
+    expect(s.thresholds.slo.find((t) => t.metric === 'dropped_iterations')?.ok).toBe(false);
     expect(s.validity.reasons.join(' ')).toMatch(/validity threshold failed: dropped_iterations/);
   });
 
@@ -154,6 +170,101 @@ describe('buildSummary', () => {
     expect(s.warnings.some((w) => w.includes('started_at='))).toBe(true);
     expect(s.warnings.some((w) => w.includes('ended_at="invalid-date"'))).toBe(true);
     expect(s.validity.valid).toBe(true);
+  });
+});
+
+describe('buildSummary per-type breakdown', () => {
+  it('breaks metrics down per type from the tagged sub-metrics', () => {
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd', 'cloudtrail'],
+      metrics: {
+        events_sent: { values: { count: 521 } },
+        'events_sent{scenario:auditd}': { values: { count: 500 } },
+        'events_sent{scenario:cloudtrail}': { values: { count: 21 } },
+      },
+    });
+    expect(s.types.auditd.events_sent).toBe(500);
+    expect(s.types.cloudtrail.events_sent).toBe(21);
+  });
+
+  it('keeps the run-wide aggregate alongside the per-type breakdown', () => {
+    // Both are needed: the aggregate is what thresholds and validity are judged on.
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd', 'cloudtrail'],
+      metrics: {
+        events_sent: { values: { count: 521 } },
+        'events_sent{scenario:auditd}': { values: { count: 500 } },
+        'events_sent{scenario:cloudtrail}': { values: { count: 21 } },
+      },
+    });
+    expect(s.metrics.events_sent.count).toBe(521);
+  });
+
+  it('reports null, not zero, for a type whose sub-metric is absent', () => {
+    // Absent is "not measured"; zero is "measured as none". Conflating them
+    // is the same defect wire_bytes: number | null exists to prevent.
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: { events_sent: { values: { count: 0 } } },
+    });
+    expect(s.types.auditd.events_sent).toBeNull();
+  });
+
+  it('reports zero, not null, for an idle scenario whose sub-metric is present with zero values', () => {
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: {
+        events_sent: { values: { count: 0 } },
+        'events_sent{scenario:auditd}': { values: { count: 0 } },
+      },
+    });
+    expect(s.types.auditd.events_sent).toBe(0);
+  });
+
+  it('separates structural thresholds from SLO thresholds', () => {
+    // The structural key set is populated as a side effect of buildThresholds;
+    // reproduce that here the way the real runtime does before handleSummary runs.
+    buildThresholds({ abort_on_fail: false, active_types: ['auditd'] });
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: {
+        'events_sent{scenario:auditd}': { thresholds: { 'count>=0': { ok: true } }, values: { count: 5 } },
+        send_failures: { thresholds: { 'rate<0.001': { ok: false } }, values: { rate: 0.5 } },
+      },
+    });
+    expect(s.thresholds.slo).toHaveLength(1);
+    expect(s.thresholds.slo[0].ok).toBe(false);
+    expect(s.thresholds.structural_count).toBe(1);
+  });
+
+  it('never lets a structural threshold affect the run verdict', () => {
+    buildThresholds({ abort_on_fail: false, active_types: ['auditd'] });
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: {
+        'events_sent{scenario:auditd}': { thresholds: { 'count>=0': { ok: true } }, values: { count: 5 } },
+        send_failures: { thresholds: { 'rate<0.001': { ok: false } }, values: { rate: 0.5 } },
+      },
+    });
+    expect(s.verdict_from).not.toContain('count>=0');
+    expect(s.verdict_from).toContain('rate<0.001');
+  });
+
+  it('publishes run.active_types so a subsetted run is distinguishable from a full one', () => {
+    const s = buildSummary({ ...base, active_types: ['auditd'], metrics: {} });
+    expect(s.run.active_types).toEqual(['auditd']);
+  });
+
+  it('defaults to no per-type breakdown when active_types is omitted', () => {
+    const s = buildSummary(input(k6Metrics()));
+    expect(s.types).toEqual({});
+    expect(s.run.active_types).toEqual([]);
   });
 });
 

@@ -57,13 +57,15 @@ const run = resolveRun(profile, readOverrides(), typeOverrides);
 // default function below, and what makes k6's scenario tag the per-type
 // metric split a later task depends on. Do not rename it.
 //
-// NOTE: buildThresholds and buildSummary below still take a single-run
-// shape (profile_thresholds/abort_on_fail, and one rate/payload_sample)
-// rather than a per-type one. Restructuring those into real per-type
-// breakdowns is a later task's job; until then this file aggregates across
-// active types (OR for abort_on_fail, sum for eps, worst for delta_pct,
-// concatenation for samples/warnings) so a multi-type profile still
-// produces a coherent — if not yet per-type-attributed — summary.
+// NOTE: buildThresholds still takes a single-run shape
+// (profile_thresholds/abort_on_fail) rather than a per-type one, and `rate`/
+// `payload_sample` below are aggregated across active types (OR for
+// abort_on_fail, sum for eps, worst for delta_pct, concatenation for
+// samples/warnings) rather than attributed per type. buildSummary DOES now
+// produce a real per-type breakdown (`summary.types`) from the tagged
+// sub-metrics k6 reports — see src/summary/build.ts — so events/failures/
+// duration numbers ARE per-type; only the rate/threshold/sample shapes above
+// remain aggregate-only.
 const scenarios: Record<string, unknown> = {};
 const GENERATORS: Record<string, BatchGenerator> = {};
 for (const type of run.active_types) {
@@ -230,6 +232,7 @@ export function handleSummary(data: K6SummaryData) {
     gen_count: run.gen_count,
     rate: aggregateRate,
     metrics: data.metrics,
+    active_types: run.active_types,
     payload_sample: PAYLOAD_SAMPLE,
     warnings: [
       ...run.active_types.flatMap((t) => run.types[t].warnings),
