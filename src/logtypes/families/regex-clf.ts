@@ -53,15 +53,21 @@ function stripQuotedValue(value: string): string {
 
 export const regexClf: FamilyModule = {
   serialize(_def: LogTypeDef, values: Record<string, string>, ts_ms: number, _seq: number): string {
+    // remote_user, server_protocol, and http_referer have no field-specific
+    // fallback here — nginx-access's own FieldSpecs (values: ['-'] /
+    // ['HTTP/1.1']) are the single source of those defaults. A caller that
+    // omits them entirely (as opposed to the real generator, which always
+    // supplies every configured field) gets the same empty-string fallback
+    // every other field gets below.
     const remoteAddr = stripNewlines(values.remote_addr ?? '');
-    const remoteUser = stripNewlines(values.remote_user ?? '-');
+    const remoteUser = stripNewlines(values.remote_user ?? '');
     const method = stripQuotedValue(values.request_method ?? '');
     const uri = stripQuotedValue(values.request_uri ?? '');
-    const protocol = stripQuotedValue(values.server_protocol ?? 'HTTP/1.1');
+    const protocol = stripQuotedValue(values.server_protocol ?? '');
     const status = stripNewlines(values.status ?? '');
     const bodyBytesSent = stripNewlines(values.body_bytes_sent ?? '');
-    const referer = stripQuotedValue(values.http_referer ?? '-');
-    const userAgent = stripQuotedValue(values.http_user_agent ?? '-');
+    const referer = stripQuotedValue(values.http_referer ?? '');
+    const userAgent = stripQuotedValue(values.http_user_agent ?? '');
 
     return (
       `${remoteAddr} - ${remoteUser} [${formatClfTime(ts_ms)}] ` +

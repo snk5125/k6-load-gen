@@ -4,9 +4,15 @@ import { nginxAccess } from '../../src/logtypes/definitions/nginx-access.ts';
 import { parseWithArtifact } from './parse-with-artifact.ts';
 import { buildField } from '../../src/payload/fields.ts';
 
+// remote_user, server_protocol, and http_referer are included here at the
+// values nginx-access's own FieldSpecs would actually produce ('-',
+// 'HTTP/1.1', '-') — serialize has no field-specific fallback for them, so
+// the definition is the only place those defaults live. See regex-clf.ts.
 const vals = {
-  remote_addr: '10.0.4.31', request_method: 'GET', request_uri: '/api/v2/items?id=8831',
-  status: '200', body_bytes_sent: '4213', http_user_agent: 'curl/8.4.0',
+  remote_addr: '10.0.4.31', remote_user: '-', request_method: 'GET',
+  request_uri: '/api/v2/items?id=8831', server_protocol: 'HTTP/1.1',
+  status: '200', body_bytes_sent: '4213', http_referer: '-',
+  http_user_agent: 'curl/8.4.0',
 };
 
 describe('regex-clf', () => {
@@ -52,8 +58,8 @@ describe('regex-clf round trip via parseWithArtifact', () => {
   // The tests above hand-match the pattern. This is the genuine round trip:
   // parseWithArtifact is driven entirely by the artifact, proving
   // parseArtifact's pattern is actually sufficient to recover every field
-  // serialize wrote — including the defaults for fields the caller omitted.
-  it('recovers every field, including defaulted ones, from a plain line', () => {
+  // serialize wrote.
+  it('recovers every field from a plain line', () => {
     const body = regexClf.serialize(nginxAccess, vals, Date.parse('2026-08-30T18:22:41Z'), 1);
     const artifact = regexClf.parseArtifact(nginxAccess);
     expect(parseWithArtifact(artifact, body)).toMatchObject({
