@@ -30,7 +30,7 @@ real Cribl Stream instance — nothing here does.
 
 | Vendor | How it's verified | Automated? |
 |---|---|---|
-| Vector | `tests/aggregator/roundtrip/` — real generator-produced events pushed through the exact committed `transform.json`'s VRL, via the official `timberio/vector:0.58.0-alpine` image (pinned; see that directory's README), asserting every declared field extracts with the right value | Yes, but **not** part of `npm test` — needs Docker. Run it explicitly: `tests/aggregator/roundtrip/run.sh` |
+| Vector | `tests/aggregator/roundtrip/` — real generator-produced events pushed through the exact committed `transform.json`'s VRL, via the official `timberio/vector:0.58.0-alpine` image (pinned; see that directory's README), asserting every declared field extracts with the right value | Yes — runs in CI as the separate `vector-roundtrip` job (`.github/workflows/ci.yml`), but **not** part of `npm test` — needs Docker. Run it locally: `tests/aggregator/roundtrip/run.sh` |
 | Cribl | Manual procedure below, against a real Cribl Stream instance | **No.** No instance and no license tier are available in this repo's environment. |
 
 `src/aggregator/cribl.ts`'s doc comment says it plainly: the function shapes are "written from

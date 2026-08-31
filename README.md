@@ -186,7 +186,7 @@ back to YAML** without re-deriving a way to emit it that doesn't reintroduce tha
 
 | Vendor | Verified how | Automated? |
 |---|---|---|
-| Vector | `tests/aggregator/roundtrip/` pushes real generator-produced events through each committed `transform.json`'s exact VRL, via the official `timberio/vector:0.58.0-alpine` image (pinned, not `latest-alpine` — see that directory's README), and asserts every declared field extracts with the generator's value | Yes — but **not** part of `npm test` (it needs Docker). Run it explicitly: `tests/aggregator/roundtrip/run.sh`. See that directory's README for what it does and does not prove. |
+| Vector | `tests/aggregator/roundtrip/` pushes real generator-produced events through each committed `transform.json`'s exact VRL, via the official `timberio/vector:0.58.0-alpine` image (pinned, not `latest-alpine` — see that directory's README), and asserts every declared field extracts with the generator's value | Yes — runs in CI as the separate `vector-roundtrip` job (`.github/workflows/ci.yml`), but **not** part of `npm test` (it needs Docker). Run it locally: `tests/aggregator/roundtrip/run.sh`. See that directory's README for what it does and does not prove. |
 | Cribl | A documented manual procedure — import `pipeline.json` into a real Cribl Stream instance, feed it the same sample events, confirm every field extracts | **No.** No Cribl instance and no license tier are available here. See `aggregator-configs/README.md` for the procedure and its verification log (date, Cribl version, and outcome per check — currently unperformed). |
 
 **A reader must not infer from a passing `npm test`, or even a passing Vector round trip, that

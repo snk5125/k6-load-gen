@@ -28,13 +28,19 @@ no artifact when the tag it ran against can silently become a different image to
 Verification log — this harness's analogue is one version line per run rather than a persistent
 table, since every run uses the same pinned image.
 
-## This is NOT part of `npm test`
+## This is NOT part of `npm test` — but it is part of CI
 
 `npm test` needs no Docker, no network, and no container runtime — that is deliberate (see the
-main README's Development section). This harness needs all three. **A green `npm test` run says
-nothing about whether the rendered Vector configs actually parse generated events** — run this
-script separately to find that out. CI does not run it either; there is no CI job wired to Docker
-here.
+main README's Development section). This harness needs all three, so it stays out of `npm test`.
+**A green `npm test` run says nothing about whether the rendered Vector configs actually parse
+generated events** — that's what this harness is for.
+
+It **is** wired into CI: `.github/workflows/ci.yml`'s `vector-roundtrip` job runs it on every
+push and PR, on GitHub-hosted runners (which carry Docker preinstalled — no separate Docker setup
+step needed). It's a separate job from `verify`, deliberately: a Docker or image-pull problem is
+a different failure class than a code or test problem, and this way a failure here doesn't slow
+down or get lost inside `verify`'s faster feedback path. Run it locally the same way CI does:
+`tests/aggregator/roundtrip/run.sh`.
 
 ## What it does, per type
 
