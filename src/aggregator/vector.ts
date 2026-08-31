@@ -38,12 +38,26 @@ export function renderVectorTransform(def: LogTypeDef): RenderedConfig {
   return { filename: 'transform.json', content: JSON.stringify(config, null, 2) + '\n' };
 }
 
+/**
+ * VRL double-quoted string literals escape `\` and `"` exactly the way
+ * JSON does, so JSON.stringify produces a valid VRL string literal for any
+ * plain string — safer than hand-counting backslashes for the unquoting
+ * logic below (verified live, see task-2-3-report.md).
+ */
+function vrlLiteral(s: string): string {
+  return JSON.stringify(s);
+}
+
 /** One VRL line per artifact kind, plus the field coercions every kind needs. */
 function buildVrl(def: LogTypeDef, artifact: ParseArtifact): string[] {
   switch (artifact.kind) {
     case 'regex':
       return [
         `. |= parse_regex!(.message, r'${artifact.pattern}')`,
+        // The parsed fields are what the aggregator indexes; keeping the
+        // raw line around alongside them roughly doubles ingest bytes for
+        // this type in a project that exists to measure ingest/index load.
+        `del(.message)`,
         ...coercionLines(def.fields),
       ];
 
@@ -53,9 +67,34 @@ function buildVrl(def: LogTypeDef, artifact: ParseArtifact): string[] {
         // named captures onto the event, including `rest` — the key=value
         // body the pair grammar below scans.
         `. |= parse_regex!(.message, r'${artifact.prefixPattern}')`,
-        `pairs = parse_regex_all!(.rest, r'${artifact.pairPattern}')`,
+        // numeric_groups: true — PAIR_REGEX (src/logtypes/families/kv-audit.ts)
+        // uses UNNAMED capture groups (group 1 = key, group 2 = value).
+        // Without this flag parse_regex_all! returns only named captures,
+        // so every match comes back empty and pair."1"/pair."2" are null —
+        // confirmed live via `vector vrl`, which aborted every event with
+        // "path segment must be either string or integer, not null" until
+        // this flag was added. See task-2-3-report.md for the transcript.
+        `pairs = parse_regex_all!(.rest, r'${artifact.pairPattern}', numeric_groups: true)`,
         `for_each(array!(pairs)) -> |_index, pair| {`,
-        `  . = set!(., [pair."1"], pair."2")`,
+        // numeric_groups captures type as string|null (VRL can't prove a
+        // capture group always matches), even though PAIR_REGEX's two
+        // groups are mandatory for anything parse_regex_all actually
+        // returns a pair for — string! asserts that at runtime.
+        `  key = string!(pair."1")`,
+        `  raw_value = string!(pair."2")`,
+        // Mirrors parseWithArtifact's unquoting (tests/logtypes/parse-with-artifact.ts):
+        // formatKvValue (src/logtypes/families/kv-audit.ts) quotes a value
+        // needing it and escapes an embedded `"` as `\"`; this is the
+        // inverse — strip the surrounding quotes, then unescape `\"` back
+        // to `"`. Left unquoted (the bug this fixes), the two renderers
+        // would silently disagree on the same input, since Cribl's kvp
+        // serde does unquote.
+        `  value = if starts_with(raw_value, ${vrlLiteral('"')}) {`,
+        `    replace(slice!(raw_value, 1, -1), ${vrlLiteral('\\"')}, ${vrlLiteral('"')})`,
+        `  } else {`,
+        `    raw_value`,
+        `  }`,
+        `  . = set!(., [key], value)`,
         `}`,
         `del(.rest)`,
         `del(.message)`,

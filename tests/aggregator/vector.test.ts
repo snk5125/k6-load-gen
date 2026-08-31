@@ -50,6 +50,47 @@ describe('renderVectorTransform', () => {
     expect(() => renderVectorTransform(bogus)).toThrow(/not-a-family/);
   });
 
+  it('throws from its own switch when the artifact kind itself is unhandled', () => {
+    // The test above only exercises the FAMILIES Proxy's guard (an
+    // unregistered family name) — it never reaches renderVectorTransform's
+    // own switch. Register a real (stub) family whose parseArtifact
+    // returns a kind the switch has no case for, so the `default` arm is
+    // what actually fires this time.
+    const STUB = 'stub-unhandled-kind' as never;
+    const registry = FAMILIES as unknown as Record<string, unknown>;
+    registry[STUB] = {
+      serialize: () => '',
+      parseArtifact: () => ({ kind: 'not-a-real-kind' }),
+    };
+    try {
+      const bogus = { ...LOG_TYPES.auditd, family: STUB } as never;
+      expect(() => renderVectorTransform(bogus)).toThrow(/not-a-real-kind/);
+    } finally {
+      delete registry[STUB];
+    }
+  });
+
+  it('pins numeric_groups on the kv parse_regex_all call', () => {
+    // PAIR_REGEX (kv-audit.ts) uses unnamed capture groups; without
+    // numeric_groups: true, parse_regex_all! returns only named captures
+    // and every pair comes back empty — confirmed live against a real
+    // auditd line (see task-2-3-report.md). Losing this flag silently
+    // breaks every kv-family transform.
+    const vrl = JSON.stringify(parse(LOG_TYPES.auditd).transforms);
+    expect(vrl).toContain('numeric_groups');
+  });
+
+  it('unquotes a kv value the way parseWithArtifact does, not left quoted', () => {
+    // formatKvValue (kv-audit.ts) quotes a value containing a space, `"`,
+    // or `=`, escaping an embedded `"` as `\"`. Cribl's kvp serde
+    // unquotes automatically; the Vector branch must do the inverse
+    // itself or the two renderers silently disagree on the same input.
+    const vrl = JSON.stringify(parse(LOG_TYPES.auditd).transforms);
+    expect(vrl).toContain('starts_with');
+    expect(vrl).toContain('slice');
+    expect(vrl).toContain('replace');
+  });
+
   it('is deterministic — same definition renders byte-identical output', () => {
     // The CI drift gate depends on this; a Set or Object.keys ordering wobble
     // would make the gate fail on unrelated commits.
