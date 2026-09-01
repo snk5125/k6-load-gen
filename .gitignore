@@ -31,9 +31,3 @@ credentials*
 
 # Local worktrees for plan execution (scratch, never part of the image)
 .worktrees/
-
-# Stale local-only docs. These predate the multi-log-type system: one hard-codes
-# a cloud region in its run examples, the other describes the eager-connect gRPC
-# lifecycle the transports no longer use. Kept on disk, never published.
-docs/user-guide.md
-docs/architecture-overview.md
