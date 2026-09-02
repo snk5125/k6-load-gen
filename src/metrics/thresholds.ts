@@ -101,6 +101,27 @@ export function isStructuralThreshold(name: string): boolean {
   return structuralKeys.has(name);
 }
 
+/**
+ * Warnings for profile thresholds that name a validity metric. `buildThresholds`
+ * drops such an entry unconditionally (the validity expression always wins);
+ * this makes the drop visible instead of silent, so an operator who wrote
+ * `dropped_iterations: count<50` learns their entry was not applied rather than
+ * wondering why the run was marked invalid at count 1.
+ */
+export function validityThresholdConflicts(
+  profile_thresholds: Record<string, string> | undefined,
+): string[] {
+  const out: string[] = [];
+  for (const [name, expr] of Object.entries(profile_thresholds ?? {})) {
+    if (!(name in VALIDITY_THRESHOLDS)) continue;
+    out.push(
+      `profile threshold "${name}: ${expr}" ignored — ${name} is a validity threshold fixed at ` +
+        `"${VALIDITY_THRESHOLDS[name].join('", "')}" and cannot be changed by a profile`,
+    );
+  }
+  return out;
+}
+
 const ABORT_DELAY = '30s';
 
 export function buildThresholds(input: ThresholdInput): Record<string, ThresholdEntry[]> {

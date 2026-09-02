@@ -4,7 +4,7 @@ import { profileName, readOverrides, readTypeOverrides } from './config/env.ts';
 import { validateProfile, type Profile } from './config/schema.ts';
 import { resolveRun } from './config/resolve.ts';
 import { redactProfile } from './config/redact.ts';
-import { buildThresholds } from './metrics/thresholds.ts';
+import { buildThresholds, validityThresholdConflicts } from './metrics/thresholds.ts';
 import { buildGenerator, type BatchGenerator } from './payload/generator.ts';
 import { createTransport } from './transports/registry.ts';
 import { buildSummary, MAX_PAYLOAD_SAMPLE } from './summary/build.ts';
@@ -48,9 +48,25 @@ if (!validation.ok) {
 
 const profile = raw as Profile;
 const typeOverrides = readTypeOverrides(Object.keys(profile.types));
-for (const w of typeOverrides.warnings) console.warn(`CONFIG WARNING: ${w}`);
+
+// This module is evaluated once per VU (plus once up front and once more in
+// the fresh runtime k6 builds for handleSummary), so an unguarded warning
+// here prints once per VU — the same line up to 200 times at the default
+// preAllocatedVUs. `__VU` is 0 only in the initial and summary evaluations
+// (measured against this project's k6: exec.vu.idInTest throws in init
+// context, `__VU` is 0 there and N inside VU N), so this prints twice per run.
+const LOG_CONFIG_WARNINGS = __VU === 0;
+function configWarn(line: string): void {
+  if (LOG_CONFIG_WARNINGS) console.warn(`CONFIG WARNING: ${line}`);
+}
+
+for (const w of typeOverrides.warnings) configWarn(w);
 
 const run = resolveRun(profile, readOverrides(), typeOverrides);
+
+// A profile entry on a validity metric is dropped by buildThresholds; say so.
+const thresholdWarnings = validityThresholdConflicts(run.profile.thresholds);
+for (const w of thresholdWarnings) configWarn(w);
 
 // One k6 scenario per active log type. The scenario key IS the log type
 // name — that is what makes exec.scenario.name a valid dispatch key in the
@@ -78,7 +94,7 @@ for (const type of run.active_types) {
 }
 
 for (const type of run.active_types) {
-  for (const w of run.types[type].warnings) console.warn(`CONFIG WARNING [${type}]: ${w}`);
+  for (const w of run.types[type].warnings) configWarn(`[${type}] ${w}`);
 }
 
 const abortOnFail = run.active_types.some((t) => run.types[t].abort_on_fail);
@@ -237,6 +253,7 @@ export function handleSummary(data: K6SummaryData) {
     warnings: [
       ...run.active_types.flatMap((t) => run.types[t].warnings),
       ...typeOverrides.warnings,
+      ...thresholdWarnings,
       ...summaryWarnings,
       ...(sendErrorTotal > LOG_FIRST
         ? [

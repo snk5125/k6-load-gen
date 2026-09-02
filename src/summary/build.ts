@@ -188,6 +188,10 @@ export function buildSummary(input: BuildSummaryInput): RunSummary {
   const slo: RunSummary['thresholds']['slo'] = [];
   let structuralCount = 0;
   const reasons: string[] = [];
+  // Failed validity thresholds, held back until the metric-level checks below
+  // have run: `dropped_iterations` gets a dedicated reason from its count, and
+  // its threshold failing is the same condition — one drop, one reason.
+  const failedValidity: { name: string; expression: string }[] = [];
   const warnings = [...input.warnings];
 
   for (const name of Object.keys(input.metrics)) {
@@ -216,7 +220,7 @@ export function buildSummary(input: BuildSummaryInput): RunSummary {
         // and trains readers to ignore the flag. Failed SLO thresholds stay fully
         // visible in `summary.thresholds.slo` and in the rendered output.
         if (!ok && name in VALIDITY_THRESHOLDS) {
-          reasons.push(`validity threshold failed: ${name} ${expression}`);
+          failedValidity.push({ name, expression });
         }
       }
     }
@@ -230,10 +234,16 @@ export function buildSummary(input: BuildSummaryInput): RunSummary {
 
   const dropped = metrics.dropped_iterations?.count ?? 0;
   if (dropped > 0) {
+    const t = failedValidity.find((f) => f.name === 'dropped_iterations');
     reasons.push(
       `generator dropped ${dropped} iterations — it could not sustain the offered rate, ` +
-        `so this run measured the generator rather than the target`,
+        `so this run measured the generator rather than the target` +
+        (t ? ` (validity threshold failed: ${t.name} ${t.expression})` : ''),
     );
+  }
+  for (const f of failedValidity) {
+    if (f.name === 'dropped_iterations' && dropped > 0) continue; // folded in above
+    reasons.push(`validity threshold failed: ${f.name} ${f.expression}`);
   }
 
   // k6 omits a metric entirely from data.metrics when it received zero

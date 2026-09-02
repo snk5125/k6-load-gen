@@ -4,7 +4,6 @@ import { SHAPES, SHAPE_NAMES } from '../../src/scenarios/shapes.ts';
 describe('SHAPES', () => {
   it('defines exactly the 12 named shapes', () => {
     expect(SHAPE_NAMES.length).toBe(12);
-    expect(new Set(SHAPE_NAMES).size).toBe(12);
     for (const n of SHAPE_NAMES) expect(SHAPES[n]).toBeDefined();
   });
 

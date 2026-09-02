@@ -97,3 +97,34 @@ describe('buildField — weighted values', () => {
     for (const c of counts.values()) expect(c).toBeGreaterThan(9000);
   });
 });
+
+describe('buildField — weight vector edge cases (follow-up)', () => {
+  it('rejects an all-zero weights vector instead of collapsing every draw onto values[0]', () => {
+    expect(() => buildField('level', { values: ['a', 'b'], weights: [0, 0] })).toThrow(/weights/);
+  });
+
+  it('excludes a zero-weight value from distinct_count, since it can never be drawn', () => {
+    const f = buildField('level', { values: ['a', 'b', 'c'], weights: [1, 0, 1] });
+    expect(f.distinct_count).toBe(2);
+    const seen = new Set<string>();
+    for (let i = 0; i < 50_000; i++) seen.add(f.valueAt(i));
+    expect(seen.has('b')).toBe(false);
+  });
+
+  it('reports only the values the 4096-slot table can reach when the pool is larger', () => {
+    const pool = Array.from({ length: 10_000 }, (_, i) => `v${i}`);
+    const f = buildField('big', { values: pool });
+    expect(f.distinct_count).toBeLessThanOrEqual(4096);
+    expect(f.distinct_count).toBeGreaterThan(4000);
+    const seen = new Set<string>();
+    for (let i = 0; i < 400_000; i++) seen.add(f.valueAt(i));
+    expect(seen.size).toBe(f.distinct_count);
+  });
+});
+
+describe('buildField — pad_to is a minimum width', () => {
+  it('leaves a value longer than pad_to untouched', () => {
+    const f = buildField('message', { cardinality: 1, pad_to: 3, prefix: 'a-long-prefix-' });
+    expect(f.valueAt(0)).toBe('a-long-prefix-0');
+  });
+});

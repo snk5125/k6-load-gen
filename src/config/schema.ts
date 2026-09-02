@@ -24,6 +24,11 @@ export interface TypeConfig {
   anchor: Anchor;
   scenario: ShapeName;
   cardinality?: Record<string, number>;
+  /** k6 `preAllocatedVUs` for this type's ramping-arrival-rate scenario.
+   * Default 200. Ignored by shared-iterations shapes (`smoke`). */
+  pre_allocated_vus?: number;
+  /** k6 `maxVUs`. Default 10x `pre_allocated_vus`. Must be >= it. */
+  max_vus?: number;
 }
 
 export interface Profile {
@@ -183,6 +188,21 @@ function validateTypeConfig(typeName: string, v: unknown, errors: string[]): voi
 
   if (!isPositiveInt(v.batch_size)) {
     errors.push(`${prefix}.batch_size: must be a positive integer`);
+  }
+
+  for (const key of ['pre_allocated_vus', 'max_vus'] as const) {
+    if (v[key] !== undefined && !isPositiveInt(v[key])) {
+      errors.push(`${prefix}.${key}: must be a positive integer`);
+    }
+  }
+  if (
+    isPositiveInt(v.pre_allocated_vus) &&
+    isPositiveInt(v.max_vus) &&
+    v.max_vus < v.pre_allocated_vus
+  ) {
+    errors.push(
+      `${prefix}.max_vus: must be >= pre_allocated_vus (${v.pre_allocated_vus}); k6 rejects the reverse`,
+    );
   }
 
   validateAnchor(v.anchor, errors, `${prefix}.anchor`);
