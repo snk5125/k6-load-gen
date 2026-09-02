@@ -242,6 +242,10 @@ This rounding means achieved EPS may differ slightly from requested EPS. The `de
 
 **`scenario`** — the load shape name. See [Load Shapes](#6-load-shapes).
 
+**`pre_allocated_vus`** — optional positive integer, default 200. k6's `preAllocatedVUs` for this type's `ramping-arrival-rate` scenario: the VU pool k6 starts with. If the pool is too small for the offered rate, k6 records `dropped_iterations` and the run is marked invalid — raise this before reaching for a bigger task. Ignored by the `smoke` shape.
+
+**`max_vus`** — optional positive integer, default 10 × `pre_allocated_vus`. k6's `maxVUs`; must be greater than or equal to `pre_allocated_vus`.
+
 **`cardinality`** — optional map of field name to positive integer, overriding the number of distinct values generated for overridable fields of this log type. Only fields with a bounded numeric cardinality can be overridden; fields with a fixed value list cannot. See [Per-Type Cardinality Overrides](#per-type-cardinality-overrides).
 
 ### Transport Options

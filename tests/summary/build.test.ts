@@ -110,6 +110,9 @@ describe('buildSummary', () => {
     expect(s.validity.valid).toBe(false);
     expect(s.thresholds.slo.find((t) => t.metric === 'dropped_iterations')?.ok).toBe(false);
     expect(s.validity.reasons.join(' ')).toMatch(/validity threshold failed: dropped_iterations/);
+    // One condition, one reason: the count and the threshold describe the same drop.
+    expect(s.validity.reasons).toHaveLength(1);
+    expect(s.validity.reasons[0]).toMatch(/dropped 17 iterations/i);
   });
 
   it('invalidates a run with dropped iterations even without a threshold entry', () => {

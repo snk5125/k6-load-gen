@@ -293,3 +293,46 @@ describe('resolveRun — fleet and duration defaults', () => {
     expect(resolveRun(p, { run_id: 'r', duration_scale: 0.01 }, noOverrides(p)).duration_scale).toBe(0.01);
   });
 });
+
+describe('resolveRun — VU sizing reaches the k6 scenario (follow-up)', () => {
+  it('threads pre_allocated_vus and max_vus from the TypeConfig', () => {
+    const p = profile();
+    p.types.auditd = { ...p.types.auditd, pre_allocated_vus: 40, max_vus: 90 };
+    const r = resolveRun(p, { run_id: 'r' }, noOverrides(p));
+    expect(r.types.auditd.k6.preAllocatedVUs).toBe(40);
+    expect(r.types.auditd.k6.maxVUs).toBe(90);
+    expect(r.profile.types.auditd.pre_allocated_vus).toBe(40);
+    expect(r.profile.types.auditd.max_vus).toBe(90);
+  });
+
+  it('derives max_vus from pre_allocated_vus when only one is set', () => {
+    const p = profile();
+    p.types.auditd = { ...p.types.auditd, pre_allocated_vus: 40 };
+    const r = resolveRun(p, { run_id: 'r' }, noOverrides(p));
+    expect(r.types.auditd.k6.preAllocatedVUs).toBe(40);
+    expect(r.types.auditd.k6.maxVUs).toBe(400);
+  });
+});
+
+describe('resolveRun — override errors name the offending value (follow-up)', () => {
+  it('rate', () => {
+    const p = profile();
+    expect(() =>
+      resolveRun(p, { run_id: 'r' }, { active: ['auditd'], overrides: { auditd: { rate: -3 } } }),
+    ).toThrow(/\(got -3\)/);
+  });
+
+  it('knee_eps', () => {
+    const p = profile();
+    expect(() =>
+      resolveRun(p, { run_id: 'r' }, { active: ['auditd'], overrides: { auditd: { knee_eps: 0 } } }),
+    ).toThrow(/\(got 0\)/);
+  });
+
+  it('batch_size', () => {
+    const p = profile();
+    expect(() =>
+      resolveRun(p, { run_id: 'r' }, { active: ['auditd'], overrides: { auditd: { batch_size: 2.5 } } }),
+    ).toThrow(/\(got 2\.5\)/);
+  });
+});

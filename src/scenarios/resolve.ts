@@ -53,6 +53,21 @@ export function resolveScenario(input: ResolveInput): ResolvedScenario {
   const { shape, anchor, batch_size, gen_count, duration_scale } = input;
 
   if (shape.executor === 'shared-iterations') {
+    // A shared-iterations shape (today only `smoke`) is a fixed unit of work,
+    // not a rate: it deliberately ignores fleet slicing and duration scaling.
+    // Say so when either was set, or a 4-generator fleet quietly runs 4x the
+    // iterations and DURATION_SCALE looks like it did nothing.
+    const ignored: string[] = [];
+    if (gen_count !== 1) ignored.push(`gen_count=${gen_count}`);
+    if (duration_scale !== 1) ignored.push(`duration_scale=${duration_scale}`);
+    const warnings =
+      ignored.length === 0
+        ? []
+        : [
+            `${ignored.join(' and ')} ignored: this shape uses the shared-iterations executor ` +
+              `(${shape.iterations} iterations across ${shape.vus} VU(s), run in full by every generator); ` +
+              `fleet slicing and duration scaling apply only to ramping-arrival-rate shapes.`,
+          ];
     return {
       k6: {
         executor: 'shared-iterations',
@@ -63,7 +78,7 @@ export function resolveScenario(input: ResolveInput): ResolvedScenario {
       achieved_peak_eps: 0,
       delta_pct: 0,
       abort_on_fail: false,
-      warnings: [],
+      warnings,
     };
   }
 
@@ -129,6 +144,8 @@ export function resolveScenario(input: ResolveInput): ResolvedScenario {
     );
   }
 
+  // Reachable from a profile's TypeConfig (`pre_allocated_vus`/`max_vus`,
+  // validated in src/config/schema.ts); 200 / 10x is the default sizing.
   const pre = input.pre_allocated_vus ?? 200;
   return {
     k6: {

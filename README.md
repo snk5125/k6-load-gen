@@ -63,8 +63,8 @@ The container command is never overridden. Configuration is environment only.
 | `RUN_ID` | *required* | Correlation key stamped on every event and artifact. Unique per run |
 | `TARGET` | profile | Destination endpoint. Overrides the profile's `target.endpoint` |
 | `TYPES` | all declared | Comma-separated subset of the profile's log types to run |
-| `DURATION_SCALE` | `1` | Multiplies every stage duration. `0.02` = wiring check; `1` = full run |
-| `GEN_INDEX` / `GEN_COUNT` | `0` / `1` | Fleet slicing. N tasks with `GEN_COUNT=N` together offer the full rate |
+| `DURATION_SCALE` | `1` | Multiplies every stage duration. `0.02` = wiring check; `1` = full run. No effect on `smoke`, which always runs its 20 iterations |
+| `GEN_INDEX` / `GEN_COUNT` | `0` / `1` | Fleet slicing. N tasks with `GEN_COUNT=N` together offer the full rate. `smoke` runs in full on every task |
 | `RESULTS_URI` | — | `s3://bucket/prefix` or a local path. Unset means artifacts die with the container |
 | `EMIT_TIMELINE` | profile, else `1` | Bucketed timeline output. Costs throughput at very high rates |
 | `KEEP_RAW` | `0` | Also ship the gzipped raw sample stream |
@@ -97,7 +97,8 @@ several types, so they are ambiguous. Use the per-type form.
 | `json-app` | flat JSON | JSON — the cheap baseline |
 
 Cardinality is the point: it drives the aggregator's real parse and index cost. Set it per field in
-the profile's `cardinality` overrides.
+the profile's `cardinality` overrides. A type can also size its k6 VU pool with `pre_allocated_vus`
+(default 200) and `max_vus` (default 10×); raise them if a run reports dropped iterations.
 
 ## Transports
 

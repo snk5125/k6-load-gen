@@ -143,3 +143,50 @@ describe('resolveScenario — executors', () => {
     expect(resolveScenario({ ...base, shape: SHAPES.sweep, anchor: { mode: 'knee', knee_eps: 1000 } }).abort_on_fail).toBe(false);
   });
 });
+
+describe('resolveScenario — shared-iterations ignores fleet and duration inputs (follow-up)', () => {
+  const smoke = { shape: SHAPES.smoke, anchor: { mode: 'knee', knee_eps: 5000 } as const };
+
+  it('warns that gen_count does not apply, so a fleet is not silently N× the iterations', () => {
+    const r = resolveScenario({ ...base, ...smoke, gen_count: 4 });
+    expect(r.k6.iterations).toBe(20);
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0]).toMatch(/gen_count/);
+    expect(r.warnings[0]).toMatch(/shared-iterations/);
+  });
+
+  it('warns that duration_scale does not apply', () => {
+    const r = resolveScenario({ ...base, ...smoke, duration_scale: 0.02 });
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0]).toMatch(/duration_scale/);
+  });
+
+  it('stays silent at the defaults', () => {
+    expect(resolveScenario({ ...base, ...smoke }).warnings).toEqual([]);
+  });
+});
+
+describe('resolveScenario — cold (negative) drift', () => {
+  it('reports a negative delta when rounding lands below the requested rate', () => {
+    // 340 eps / batch 100 -> round(3.4) = 3 iterations/s -> 300 eps: 11.8% cold.
+    const r = resolveScenario({ ...base, shape: flat(1, 60), anchor: { mode: 'absolute', base_eps: 340 } });
+    expect(r.achieved_peak_eps).toBe(300);
+    expect(r.delta_pct).toBeCloseTo(-11.76, 1);
+    expect(r.warnings.join(' ')).toMatch(/drift -11\.8%/);
+  });
+
+  it('picks the cold stage over a smaller hot one by magnitude', () => {
+    const shape: ShapeDef = {
+      executor: 'ramping-arrival-rate',
+      start_mult: 1,
+      stages: [
+        { mult: 0.25, duration_sec: 10 }, // 250 -> 3 -> 300, +20%
+        { mult: 0.34, duration_sec: 10 }, // 340 -> 3 -> 300, -11.8%
+        { mult: 0.14, duration_sec: 10 }, // 140 -> 1 -> 100, -28.6%
+      ],
+    };
+    const r = resolveScenario({ ...base, shape, anchor: { mode: 'absolute', base_eps: 1000 } });
+    expect(r.delta_pct).toBeCloseTo(-28.57, 1);
+    expect(r.warnings.join(' ')).toMatch(/0\.14x stage/);
+  });
+});

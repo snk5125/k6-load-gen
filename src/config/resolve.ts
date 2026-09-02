@@ -161,11 +161,15 @@ export function resolveRun(
     // per type.
     let anchor: Anchor = tc.anchor;
     if (ov.rate !== undefined) {
-      if (ov.rate <= 0) throw new ConfigError(`rate for type "${typeName}" must be a positive number`);
+      if (ov.rate <= 0) {
+        throw new ConfigError(`rate for type "${typeName}" must be a positive number (got ${ov.rate})`);
+      }
       anchor = { mode: 'absolute', base_eps: ov.rate };
     } else if (ov.knee_eps !== undefined) {
       if (ov.knee_eps <= 0) {
-        throw new ConfigError(`knee_eps for type "${typeName}" must be a positive number`);
+        throw new ConfigError(
+          `knee_eps for type "${typeName}" must be a positive number (got ${ov.knee_eps})`,
+        );
       }
       anchor = { mode: 'knee', knee_eps: ov.knee_eps };
     }
@@ -173,14 +177,24 @@ export function resolveRun(
     let batchSize = tc.batch_size;
     if (ov.batch_size !== undefined) {
       if (!Number.isInteger(ov.batch_size) || ov.batch_size < 1) {
-        throw new ConfigError(`batch_size for type "${typeName}" must be a positive integer`);
+        throw new ConfigError(
+          `batch_size for type "${typeName}" must be a positive integer (got ${ov.batch_size})`,
+        );
       }
       batchSize = ov.batch_size;
     }
 
     const payload = buildPayloadSpec(typeName, tc.cardinality, batchSize);
     const shape = SHAPES[scenarioName];
-    const resolved = resolveScenario({ shape, anchor, batch_size: batchSize, gen_count, duration_scale });
+    const resolved = resolveScenario({
+      shape,
+      anchor,
+      batch_size: batchSize,
+      gen_count,
+      duration_scale,
+      pre_allocated_vus: tc.pre_allocated_vus,
+      max_vus: tc.max_vus,
+    });
 
     types[typeName] = {
       k6: resolved.k6,
@@ -191,7 +205,12 @@ export function resolveRun(
       abort_on_fail: resolved.abort_on_fail,
       warnings: resolved.warnings,
     };
-    mergedTypes[typeName] = { batch_size: batchSize, anchor, scenario: scenarioName, cardinality: tc.cardinality };
+    mergedTypes[typeName] = {
+      ...tc,
+      batch_size: batchSize,
+      anchor,
+      scenario: scenarioName,
+    };
   }
 
   const merged: Profile = { ...profile, target, types: mergedTypes };

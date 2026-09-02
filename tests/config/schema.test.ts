@@ -269,3 +269,33 @@ describe('validateProfile — per-transport option validation', () => {
     expect(r.errors.join(' ')).toMatch(/types\.constructor.*unknown log type/);
   });
 });
+
+describe('validateProfile — VU sizing (follow-up)', () => {
+  const withVus = (extra: Record<string, unknown>) => ({
+    ...base,
+    types: { auditd: { ...validTypes.auditd, ...extra } },
+  });
+
+  it('accepts pre_allocated_vus and max_vus as positive integers', () => {
+    expect(validateProfile(withVus({ pre_allocated_vus: 50, max_vus: 500 })).ok).toBe(true);
+    expect(validateProfile(withVus({ pre_allocated_vus: 50 })).ok).toBe(true);
+    expect(validateProfile(withVus({ max_vus: 500 })).ok).toBe(true);
+  });
+
+  it('rejects a non-positive-integer pre_allocated_vus or max_vus', () => {
+    for (const bad of [0, -1, 1.5, '50']) {
+      const r = validateProfile(withVus({ pre_allocated_vus: bad }));
+      expect(r.ok).toBe(false);
+      expect(r.errors.join(' ')).toMatch(/types\.auditd\.pre_allocated_vus/);
+      const m = validateProfile(withVus({ max_vus: bad }));
+      expect(m.ok).toBe(false);
+      expect(m.errors.join(' ')).toMatch(/types\.auditd\.max_vus/);
+    }
+  });
+
+  it('rejects max_vus below pre_allocated_vus', () => {
+    const r = validateProfile(withVus({ pre_allocated_vus: 100, max_vus: 50 }));
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/max_vus.*pre_allocated_vus/);
+  });
+});

@@ -3,10 +3,16 @@ import type { Distribution, FieldSpec } from './types.ts';
 const TABLE_SIZE = 4096;
 
 /**
- * Limitation: For very large N (cardinality > TABLE_SIZE), the 4096-slot Zipf
- * lookup table cannot represent every rank; the tail becomes unreachable under
- * 'zipf' distribution. This is acceptable because Zipf is for realism, not
- * complete coverage. Distinct-count tests use uniform distribution by design.
+ * Limitation: both table-backed paths — 'zipf' over a numeric cardinality and
+ * a weighted `values` list — sample through a 4096-slot lookup table, so at
+ * most TABLE_SIZE distinct ranks are ever reachable, and a rank whose share of
+ * the total weight is well under 1/TABLE_SIZE may get no slot at all (the
+ * Zipf tail, or a `values` entry with weight 0). This is acceptable because
+ * those distributions exist for realism, not complete coverage; the uniform
+ * cardinality path indexes the pool directly and reaches every value.
+ * `distinct_count` on a table-backed generator reports what the table can
+ * actually produce, not the declared pool size. Distinct-count tests use
+ * uniform distribution by design.
  */
 
 /** MurmurHash3 finalizer. Deterministic, fast, no allocation. */
@@ -34,6 +40,12 @@ export interface FieldGenerator {
 /** Expand a weight vector into a fixed lookup table for O(1) sampling. */
 function weightTable(weights: number[]): Int32Array {
   const total = weights.reduce((a, b) => a + b, 0);
+  // Weights are authored in code (src/logtypes/definitions), so a bad vector
+  // is a definition bug: fail at build time rather than divide by zero and
+  // silently collapse every draw onto values[0].
+  if (!(total > 0)) {
+    throw new Error(`weights must sum to a positive number (got [${weights.join(', ')}])`);
+  }
   const table = new Int32Array(TABLE_SIZE);
   let rank = 0;
   let acc = weights[0] / total;
@@ -48,12 +60,18 @@ function weightTable(weights: number[]): Int32Array {
   return table;
 }
 
+/** How many distinct ranks a lookup table can produce — see the limitation note above. */
+function reachableRanks(table: Int32Array): number {
+  return new Set(table).size;
+}
+
 function zipfWeights(n: number, exponent = 1.0): number[] {
   const w = new Array<number>(n);
   for (let i = 0; i < n; i++) w[i] = 1 / Math.pow(i + 1, exponent);
   return w;
 }
 
+/** Right-pads to a MINIMUM width; a value already longer than `to` is returned unchanged. */
 function pad(value: string, to?: number): string {
   if (!to || value.length >= to) return value;
   return value + 'x'.repeat(to - value.length);
@@ -66,7 +84,7 @@ export function buildField(name: string, spec: FieldSpec): FieldGenerator {
     const pool = spec.values;
     const table = weightTable(spec.weights ?? pool.map(() => 1));
     return {
-      distinct_count: pool.length,
+      distinct_count: reachableRanks(table),
       valueAt: (ordinal) => pool[table[hash32(ordinal, seed) % TABLE_SIZE]],
     };
   }
@@ -88,7 +106,7 @@ export function buildField(name: string, spec: FieldSpec): FieldGenerator {
   if (dist === 'zipf') {
     const table = weightTable(zipfWeights(n));
     return {
-      distinct_count: n,
+      distinct_count: reachableRanks(table),
       valueAt: (ordinal) => pool[table[hash32(ordinal, seed) % TABLE_SIZE]],
     };
   }

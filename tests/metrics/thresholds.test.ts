@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildThresholds, isStructuralThreshold } from '../../src/metrics/thresholds.ts';
+import { buildThresholds, isStructuralThreshold, validityThresholdConflicts } from '../../src/metrics/thresholds.ts';
 
 describe('buildThresholds', () => {
   it('always applies the dropped_iterations validity threshold', () => {
@@ -90,5 +90,20 @@ describe('buildThresholds', () => {
   it('still emits the validity thresholds a profile cannot weaken', () => {
     const t = buildThresholds({ abort_on_fail: false, active_types: ['auditd'] });
     expect(t.dropped_iterations).toEqual(['count<1']);
+  });
+});
+
+describe('validityThresholdConflicts (follow-up)', () => {
+  it('names a profile threshold that tries to set a validity metric', () => {
+    const w = validityThresholdConflicts({ dropped_iterations: 'count<999', send_failures: 'rate<0.1' });
+    expect(w).toHaveLength(1);
+    expect(w[0]).toMatch(/dropped_iterations/);
+    expect(w[0]).toMatch(/count<999/);
+    expect(w[0]).toMatch(/count<1/);
+  });
+
+  it('is empty when nothing conflicts', () => {
+    expect(validityThresholdConflicts({ send_failures: 'rate<0.1' })).toEqual([]);
+    expect(validityThresholdConflicts(undefined)).toEqual([]);
   });
 });
