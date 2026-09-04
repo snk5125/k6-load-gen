@@ -298,7 +298,12 @@ if [ "$FLEET" = "1" ]; then
   done
   wait
 
-  # Container exit code — explicit precedence, not a numeric max:
+  # Container exit code — explicit precedence, not a numeric max. The SAME
+  # rule is implemented by fleetExitCode in src/fleet/merge.ts and carried
+  # on the fleet summary as fleet.exit_code (for multi-task orchestrators
+  # that merge downloaded generator directories); the wrapper keeps its own
+  # copy only because it must still exit correctly when the merge itself
+  # fails. tests/wrapper/run-sh.test.ts asserts the two agree.
   #   any non-zero code other than 99 (a crash, a config error, a kill) beats
   #   99, because a generator that never ran means the fleet's numbers are
   #   not a measurement at all, which must not be downgraded to "thresholds

@@ -794,7 +794,7 @@ Set `GEN_COUNT=N` and leave `GEN_INDEX` unset. `bin/run.sh` starts N k6 processe
 - **One merged `timeline.jsonl`**, bucket by bucket (counts summed, `failure_rate` recomputed from summed samples, percentiles worst-of).
 - **Every generator's own artifacts** as well, under `gen-<i>/` (local) or `runs/<run_id>/gen-<i>/` (S3), exactly as a multi-task fleet would produce them. The fleet artifacts land under `fleet/` and `runs/<run_id>/fleet/`, with index and timeline stems `<run_id>-fleet`.
 
-The container's **exit code** is the worst generator's, with an explicit precedence: any non-zero code other than 99 (a crash or config error) beats 99, because a generator that never ran means the fleet's numbers are not a measurement; 99 beats 0. Console output is tagged `[gen-<i>]` per line.
+The container's **exit code** (also recorded as `fleet.exit_code` in the merged summary) is the worst generator's, with an explicit precedence: any non-zero code other than 99 (a crash or config error) beats 99, because a generator that never ran means the fleet's numbers are not a measurement; 99 beats 0. Console output is tagged `[gen-<i>]` per line.
 
 Limits: the N processes share one task's CPUs, so this mode is for generator identity and one-launch convenience, not for scaling past a single task — the wrapper warns when `GEN_COUNT` exceeds the CPUs it can see. Memory and `raw.json` output scale with N; set `EMIT_TIMELINE=0` for very large in-task fleets. `smoke` runs its fixed iterations in every generator.
 

@@ -127,8 +127,11 @@ describe('emitKeys — fleet summaries', () => {
     });
   });
 
-  it('lets the caller override gen_index, so a generator with no summary can still have its log placed', () => {
+  it('lets the caller override gen_index on a FLEET summary, so a generator with no summary can still have its log placed', () => {
     expect(emitKeys(fleetSummary, 'k6', 2).run_log).toBe('k6/runs/r1/gen-2/run.log');
-    expect(emitKeys(summary, 'k6', 5).summary).toBe('k6/runs/r1/gen-5/summary.json');
+  });
+
+  it('refuses an override on a generator summary, which carries its own identity', () => {
+    expect(() => emitKeys(summary, 'k6', 5)).toThrow(/override is only valid .* FLEET summary/i);
   });
 });

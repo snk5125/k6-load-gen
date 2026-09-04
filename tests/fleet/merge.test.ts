@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mergeSummaries, type GeneratorInput } from '../../src/fleet/merge.ts';
+import { fleetExitCode, isFleetSummary, mergeSummaries, type GeneratorInput } from '../../src/fleet/merge.ts';
 import type { RunSummary } from '../../src/summary/build.ts';
 
 /** A schema-2 single-generator summary, shaped like buildSummary's output. */
@@ -175,5 +175,33 @@ describe('mergeSummaries — warnings and samples', () => {
     const f = mergeSummaries([input(0, many(0)), input(1, many(1))], 2);
     expect(f.payload_sample).toHaveLength(10);
     expect(f.payload_sample.slice(0, 4)).toEqual([{ g: 0, k: 0 }, { g: 1, k: 0 }, { g: 0, k: 1 }, { g: 1, k: 1 }]);
+  });
+});
+
+describe('fleetExitCode — the precedence bin/run.sh applies, available to every consumer', () => {
+  const ok = (i: number) => input(i, gen(i, {}, 3), 0);
+  it('all clean -> 0', () => expect(fleetExitCode([ok(0), ok(1), ok(2)])).toBe(0));
+  it('one threshold breach -> 99', () => expect(fleetExitCode([ok(0), input(1, gen(1, {}, 3), 99), ok(2)])).toBe(99));
+  it('a crash beats a threshold breach: 107 + 99 -> 107', () =>
+    expect(fleetExitCode([input(0, null, 107), input(1, gen(1, {}, 3), 99), ok(2)])).toBe(107));
+  it('among crashes the lowest generator index wins', () =>
+    expect(fleetExitCode([input(2, null, 3), input(0, null, 107), ok(1)])).toBe(107));
+  it('a claimed success with no summary, or no recorded code, counts as 1', () => {
+    expect(fleetExitCode([ok(0), input(1, null, 0)])).toBe(1);
+    expect(fleetExitCode([ok(0), input(1, null, null)])).toBe(1);
+  });
+  it('is carried on the merged summary', () => {
+    const f = mergeSummaries([ok(0), input(1, gen(1, {}, 3), 99), ok(2)], 3);
+    expect(f.fleet.exit_code).toBe(99);
+  });
+});
+
+describe('isFleetSummary', () => {
+  it('accepts only an object with a non-null object fleet block', () => {
+    expect(isFleetSummary(mergeSummaries([input(0, gen(0))], 1))).toBe(true);
+    expect(isFleetSummary(gen(0))).toBe(false);
+    expect(isFleetSummary({ fleet: null })).toBe(false);
+    expect(isFleetSummary({ fleet: 'yes' })).toBe(false);
+    expect(isFleetSummary(null)).toBe(false);
   });
 });

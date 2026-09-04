@@ -710,7 +710,10 @@ describe('bin/run.sh single-task fleet mode — exit code precedence', () => {
   });
 
   it('one threshold breach -> 99, the CI gate', () => {
-    expect(runFleet({ 0: ok, 1: { code: 99, writeSummary: true }, 2: ok }).status).toBe(99);
+    const r = runFleet({ 0: ok, 1: { code: 99, writeSummary: true }, 2: ok });
+    expect(r.status).toBe(99);
+    const fleet = JSON.parse(readFileSync(join(root, 'w', 'fleet', 'summary.json'), 'utf8'));
+    expect(fleet.fleet.exit_code).toBe(99);
   });
 
   it('a generator that never ran beats a threshold breach: 107 + 99 -> 107', () => {
@@ -719,6 +722,8 @@ describe('bin/run.sh single-task fleet mode — exit code precedence', () => {
     const fleet = JSON.parse(readFileSync(join(root, 'w', 'fleet', 'summary.json'), 'utf8'));
     expect(fleet.validity.valid).toBe(false);
     expect(fleet.fleet.generators_reported).toBe(2);
+    // The shell precedence and the merge module's must never drift apart.
+    expect(fleet.fleet.exit_code).toBe(r.status);
   });
 
   it('a bogus success (exit 0, no summary) is promoted to 1 per generator', () => {

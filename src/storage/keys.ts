@@ -1,3 +1,5 @@
+import { isFleetSummary } from '../fleet/merge.ts';
+
 export interface RunRef {
   run_id: string;
   /** null = the merged FLEET artifact of a single-task fleet run (see
@@ -111,9 +113,8 @@ export function indexRecord(summary: Record<string, unknown>): Record<string, Sc
   // A fleet summary (src/fleet/merge.ts) has no single generator: its
   // gen_index is null and must STAY null here — `num()` would coerce it to
   // 0 and file the fleet row as generator 0 of its own run.
-  const fleet = summary.fleet;
-  const isFleet = typeof fleet === 'object' && fleet !== null;
-  const fleetBlock = (isFleet ? fleet : {}) as Record<string, unknown>;
+  const isFleet = isFleetSummary(summary);
+  const fleetBlock = (isFleet ? summary.fleet : {}) as Record<string, unknown>;
 
   return {
     schema_version: typeof summary.schema_version === 'number' ? summary.schema_version : null,

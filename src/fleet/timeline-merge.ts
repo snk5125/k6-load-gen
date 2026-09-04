@@ -1,4 +1,5 @@
 import type { TimelineBucket } from '../timeline/types.ts';
+import { maxNullable } from './nullable.ts';
 
 /**
  * Sums N generators' timelines bucket by bucket into one fleet timeline.
@@ -35,9 +36,9 @@ export function mergeBuckets(inputs: TimelineBucket[][]): TimelineBucket[] {
       acc.send_failures += b.send_failures;
       acc.send_samples += b.send_samples;
       acc.dropped_iterations += b.dropped_iterations;
-      acc.send_duration_p50 = maxNullable(acc.send_duration_p50, b.send_duration_p50);
-      acc.send_duration_p95 = maxNullable(acc.send_duration_p95, b.send_duration_p95);
-      acc.send_duration_p99 = maxNullable(acc.send_duration_p99, b.send_duration_p99);
+      acc.send_duration_p50 = maxNullable([acc.send_duration_p50, b.send_duration_p50]);
+      acc.send_duration_p95 = maxNullable([acc.send_duration_p95, b.send_duration_p95]);
+      acc.send_duration_p99 = maxNullable([acc.send_duration_p99, b.send_duration_p99]);
     }
   }
 
@@ -48,10 +49,4 @@ export function mergeBuckets(inputs: TimelineBucket[][]): TimelineBucket[] {
       eps: b.events_sent / b.bucket_sec,
       failure_rate: b.send_samples === 0 ? 0 : b.send_failures / b.send_samples,
     }));
-}
-
-function maxNullable(a: number | null, b: number | null): number | null {
-  if (a === null) return b;
-  if (b === null) return a;
-  return Math.max(a, b);
 }

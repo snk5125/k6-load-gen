@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { artifactKeys, indexRecord } from './keys.ts';
+import { isFleetSummary } from '../fleet/merge.ts';
 
 export function emitIndex(summaryJson: string): string {
   return JSON.stringify(indexRecord(JSON.parse(summaryJson))) + '\n';
@@ -33,10 +34,17 @@ export function emitKeys(
   // override lets bin/run.sh place a generator's run.log using the FLEET
   // summary's identity when that generator produced no summary of its own —
   // the crash log is the most useful artifact of a partial failure.
+  const fleet = isFleetSummary(s);
+  if (genIndexOverride !== undefined && !fleet) {
+    throw new Error(
+      'a gen_index override is only valid when deriving keys from a FLEET summary; ' +
+        'a generator summary carries its own generator identity',
+    );
+  }
   const genIndex =
     genIndexOverride !== undefined
       ? genIndexOverride
-      : s.fleet !== undefined && s.fleet !== null
+      : fleet
         ? null
         : typeof gen.gen_index === 'number'
           ? gen.gen_index

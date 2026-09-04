@@ -660,7 +660,7 @@ A Lambda function or CI job that orchestrates fleet runs should:
 1. Generate a single `RUN_ID` for the fleet (e.g., `fleet-2026-08-31-a1b2c3`)
 2. Call `aws ecs run-task` once per generator, passing `GEN_INDEX=0`, `GEN_INDEX=1`, etc.
 3. Wait for all tasks to reach `STOPPED` state
-4. Collect `summary.json` from each generator's S3 path and merge them: download the `gen-<i>/` directories and run `node /app/dist/fleet-cli.js merge <out-dir> gen-0 gen-1 gen-2` (available inside the image, or from a checkout via `npx tsx src/fleet/cli.ts`) to get the same merged fleet summary a single-task fleet produces
+4. Collect `summary.json` from each generator's S3 path and merge them: download the `gen-<i>/` directories and run `node /app/dist/fleet-cli.js merge <out-dir> gen-0 gen-1 gen-2` (available inside the image, or from a checkout via `npx tsx src/fleet/cli.ts`) to get the same merged fleet summary a single-task fleet produces; its `fleet.exit_code` is the fleet verdict under the same precedence a single-task fleet exits with
 
 Example for a three-generator fleet:
 

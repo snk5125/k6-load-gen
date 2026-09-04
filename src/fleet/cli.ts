@@ -47,14 +47,19 @@ export function mergeDirs(outDir: string, genDirs: string[]): string {
   const read = genDirs.map(readGeneratorDir);
   const fleet = mergeSummaries(read.map((r) => r.input), genDirs.length);
   const timelines = read.map((r) => r.timeline).filter((t): t is TimelineBucket[] => t !== null);
+  // Every merge step runs BEFORE anything touches disk: bin/run.sh ships
+  // fleet/summary.json on file existence, so a summary written ahead of a
+  // timeline merge that then throws would be shipped as authoritative while
+  // the console said the merge failed.
+  const merged = timelines.length > 0 ? mergeBuckets(timelines) : null;
+  const report = renderFleetSummary(fleet);
 
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, 'summary.json'), JSON.stringify(fleet, null, 2), 'utf8');
-  if (timelines.length > 0) {
-    const merged = mergeBuckets(timelines);
+  if (merged !== null) {
     writeFileSync(join(outDir, 'timeline.jsonl'), merged.map((b) => JSON.stringify(b)).join('\n') + '\n', 'utf8');
   }
-  return renderFleetSummary(fleet);
+  return report;
 }
 
 // Node entrypoint. Guarded so importing this module in a test does not run it.

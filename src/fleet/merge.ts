@@ -1,4 +1,5 @@
 import { MAX_PAYLOAD_SAMPLE, type RunSummary, type TypeSummary } from '../summary/build.ts';
+import { maxNullable } from './nullable.ts';
 
 /**
  * Merges N single-generator summaries (one per k6 process of a single-task
@@ -56,14 +57,48 @@ export interface FleetSummary extends Omit<RunSummary, 'generator'> {
   fleet: {
     generator_count: number;
     generators_reported: number;
+    /** The fleet's verdict as a process exit code — see fleetExitCode. This
+     * is the code bin/run.sh exits with in single-task fleet mode, and the
+     * one a multi-task orchestrator should use after merging downloaded
+     * generator directories, so both fleets judge failures the same way. */
+    exit_code: number;
     generators: FleetGeneratorEntry[];
     /** Which rule produced each non-obvious field — see the module comment. */
     aggregation: Record<string, string>;
   };
 }
 
+/** THE fleet-summary predicate. src/storage/keys.ts and index-cli.ts use it
+ * too, so S3 keys, index rows and this module cannot disagree on what a
+ * fleet artifact is. */
 export function isFleetSummary(s: unknown): s is FleetSummary {
-  return typeof s === 'object' && s !== null && 'fleet' in s && (s as { fleet: unknown }).fleet !== null;
+  if (typeof s !== 'object' || s === null) return false;
+  const fleet = (s as { fleet?: unknown }).fleet;
+  return typeof fleet === 'object' && fleet !== null;
+}
+
+/**
+ * The fleet's exit code, with an explicit precedence rather than a numeric
+ * max: any non-zero code other than 99 (a crash, a config error, a kill)
+ * beats 99, because a generator that never ran means the fleet's numbers
+ * are not a measurement at all and must not be downgraded to "thresholds
+ * failed"; 99 beats 0; among crash codes the lowest generator index wins.
+ * A generator with no summary and no recorded code, or a claimed success
+ * with no summary, counts as 1 (the same rule bin/run.sh applies).
+ */
+export function fleetExitCode(inputs: GeneratorInput[]): number {
+  let out = 0;
+  for (const i of [...inputs].sort((a, b) => a.gen_index - b.gen_index)) {
+    let code = i.exit_code ?? 1;
+    if (code === 0 && i.summary === null) code = 1;
+    if (code === 0) continue;
+    if (code !== 99) {
+      if (out === 0 || out === 99) out = code;
+    } else if (out === 0) {
+      out = 99;
+    }
+  }
+  return out;
 }
 
 const AGGREGATION: Record<string, string> = {
@@ -136,11 +171,6 @@ function sumNullable(
     warnings.push(`${label}: null on ${missing.map((g) => `gen-${g}`).join(', ')}; summed the rest`);
   }
   return present.reduce((a, p) => a + p[0], 0);
-}
-
-function maxNullable(xs: Array<number | null | undefined>): number | null {
-  const present = xs.filter((x): x is number => typeof x === 'number');
-  return present.length === 0 ? null : Math.max(...present);
 }
 
 function mergeTypes(
@@ -359,6 +389,7 @@ export function mergeSummaries(inputs: GeneratorInput[], gen_count: number): Fle
     fleet: {
       generator_count: gen_count,
       generators_reported: reporting.length,
+      exit_code: fleetExitCode(sorted),
       generators: sorted.map(entryFor),
       aggregation: { ...AGGREGATION },
     },

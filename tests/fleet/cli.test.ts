@@ -97,6 +97,17 @@ describe('src/fleet/cli.ts merge (spawned as a process)', () => {
     expect(existsSync(join(out, 'summary.json'))).toBe(false);
   });
 
+  it('writes nothing when the timeline merge fails, so a half-merged fleet cannot be shipped', () => {
+    const a = genDir(0, { 'summary.json': summary(0, 300), exit_code: '0\n', 'timeline.jsonl': bucket(300) + '\n' });
+    const wide = bucket(500).replace('"bucket_sec":15', '"bucket_sec":30');
+    const b = genDir(1, { 'summary.json': summary(1, 500), exit_code: '0\n', 'timeline.jsonl': wide + '\n' });
+    const out = join(root, 'fleet');
+    const r = run(['merge', out, a, b]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/bucket_sec/);
+    expect(existsSync(join(out, 'summary.json'))).toBe(false);
+  });
+
   it('rejects a directory that is not named gen-<index>', () => {
     const bad = join(root, 'other');
     mkdirSync(bad);
