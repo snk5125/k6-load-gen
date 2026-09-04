@@ -670,7 +670,7 @@ docker build --target launcher -t k6-fleet-launch:v4 .
 ```
 
 ```bash
-docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION -v "$PWD:/w:ro" k6-fleet-launch:v4 run --cluster <gen-cluster> --task-definition k6-load-gen --network-configuration "$NETCFG" --overrides /w/sweep-125k.json --count 4
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION -v "$PWD:/w:ro" k6-fleet-launch:v4 run --cluster <gen-cluster> --task-definition k6-load-gen --network-configuration "$NETCFG" --overrides /w/sweep-125k.json --count 4
 ```
 
 The generator image carries the same launcher too (`<generator image> fleet-launch run ...`), so a
@@ -678,9 +678,15 @@ machine that already has it needs nothing else. Build both from the same commit 
 the summaries it reads agree. A hardened pipeline substitutes the launcher's base with
 `--build-arg LAUNCHER_BASE_IMAGE=<image>`; it must be glibc-based with `apt` and Node 22+.
 
+- `--user "$(id -u):$(id -g)"` runs the launcher as you, so it can read your mode-600 AWS files
+  through the mount. Without it the container's own user sees the directory but not the files, and
+  the CLI reports that the profile cannot be found. (Do not loosen `~/.aws` on the host instead.)
 - `-e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro"` gives the container's `aws` CLI your profiles,
   credentials and SSO cache read-only; `-e AWS_PROFILE -e AWS_REGION` pass the selected profile and
-  region through unchanged. Static keys work too: `-e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY
+  region through unchanged. Log in with `aws sso login` on the host first; the token cache rides
+  along with the mount. A profile using `credential_process` cannot work inside the container:
+  export short-lived keys instead (`eval "$(aws configure export-credentials --format env)"`) and
+  pass them with `-e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN`. Static keys work too: `-e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY
   -e AWS_SESSION_TOKEN`.
 - `-v "$PWD:/w:ro"` mounts the directory holding the overrides file.
 - The overrides file must not set `GEN_INDEX`; the launcher assigns one per task. `RESULTS_URI`
@@ -694,7 +700,7 @@ the summaries it reads agree. A hardened pipeline substitutes the launcher's bas
 To merge a fleet launched any other way, or to redo a merge:
 
 ```bash
-docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION k6-fleet-launch:v4 merge --results-uri s3://<bucket>/<prefix> --run-id <run_id> --count 4
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION k6-fleet-launch:v4 merge --results-uri s3://<bucket>/<prefix> --run-id <run_id> --count 4
 ```
 
 Each generator ships its k6 exit status as `runs/<run_id>/gen-<i>/exit_code`, so a merge from S3
