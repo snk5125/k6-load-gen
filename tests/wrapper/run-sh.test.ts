@@ -581,3 +581,227 @@ describe('bin/run.sh s3:// upload path (stub aws on PATH)', () => {
     expect(awsDestinations(awsLog)).toContain('s3://bucket/runs/r1/gen-0/summary.json');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Single-task fleet mode: GEN_COUNT=N with GEN_INDEX unset runs N k6
+// processes inside one container and merges their results (see the fleet
+// section of bin/run.sh and src/fleet/).
+// ---------------------------------------------------------------------------
+
+const FLEET_CLI = `${TSX} ${join(REPO, 'src', 'fleet', 'cli.ts')}`;
+
+/** A schema-2 summary template; `__GEN__` is substituted by the stub from $GEN_INDEX. */
+function fleetSummaryTemplate(genCount: number): string {
+  return JSON.stringify({
+    schema_version: 2,
+    run: { run_id: 'r1', started_at: '2026-08-29T22:00:00.000Z', ended_at: '2026-08-29T22:01:00.000Z', duration_sec: 60, k6_version: 'v2.2.0', active_types: ['json-app'] },
+    resolved_config: { name: 'local-null', target: { transport: 'null' }, types: { 'json-app': { scenario: 'smoke' } } },
+    generator: { gen_index: '__GEN__', gen_count: genCount },
+    rate: { requested_eps: 1000, achieved_eps: 1000, delta_pct: 0 },
+    metrics: { events_attempted: { count: 100 }, events_sent: { count: 100 }, send_failures: { rate: 0, passes: 1, fails: 0 } },
+    types: {},
+    thresholds: { slo: [], structural_count: 0 },
+    verdict_from: [],
+    validity: { dropped_iterations: 0, generator_cpu: null, valid: true, reasons: [] },
+    payload_sample: [],
+    warnings: [],
+  }).replace('"__GEN__"', '__GEN__');
+}
+
+/**
+ * A fake k6 whose behaviour depends on $GEN_INDEX, so one stub can play every
+ * generator of a fleet. Records argv and the GEN_* environment it saw into
+ * its working directory — which in fleet mode is that generator's own dir.
+ */
+function stubFleetK6(perGen: Record<number, { code: number; writeSummary: boolean }>, genCount: number): string {
+  const binDir = join(root, 'bin');
+  mkdirSync(binDir, { recursive: true });
+  const cases = Object.entries(perGen)
+    .map(([i, o]) => `  ${i}) CODE=${o.code}; WRITE=${o.writeSummary ? 1 : 0} ;;`)
+    .join('\n');
+  const script = `#!/bin/sh
+printf '%s\\n' "$@" > k6-argv.txt
+echo "GEN_INDEX=\${GEN_INDEX:-unset} GEN_COUNT=\${GEN_COUNT:-unset}" > k6-env.txt
+case "\${GEN_INDEX:-unset}" in
+${cases}
+  *) CODE=1; WRITE=0 ;;
+esac
+echo "stub-k6 output line 0"
+echo "stub-k6 output line 1"
+if [ "$WRITE" = 1 ]; then
+  sed "s/__GEN__/\${GEN_INDEX}/g" > summary.json <<'JSON'
+${fleetSummaryTemplate(genCount)}
+JSON
+fi
+exit $CODE
+`;
+  const p = join(binDir, 'k6');
+  writeFileSync(p, script);
+  chmodSync(p, 0o755);
+  return binDir;
+}
+
+const ok = { code: 0, writeSummary: true };
+
+describe('bin/run.sh single-task fleet mode — detection', () => {
+  it('GEN_COUNT=3 with GEN_INDEX unset runs three generators and merges them', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubFleetK6({ 0: ok, 1: ok, 2: ok }, 3);
+    const r = runWrapper(binDir, workdir, { GEN_COUNT: '3', FLEET_CLI });
+    expect(r.status, r.stderr).toBe(0);
+    for (const i of [0, 1, 2]) {
+      expect(existsSync(join(workdir, `gen-${i}`, 'summary.json'))).toBe(true);
+      expect(readFileSync(join(workdir, `gen-${i}`, 'k6-env.txt'), 'utf8')).toContain(`GEN_INDEX=${i} GEN_COUNT=3`);
+      expect(readFileSync(join(workdir, `gen-${i}`, 'exit_code'), 'utf8').trim()).toBe('0');
+    }
+    const fleet = JSON.parse(readFileSync(join(workdir, 'fleet', 'summary.json'), 'utf8'));
+    expect(fleet.fleet.generator_count).toBe(3);
+    expect(fleet.metrics.events_sent.count).toBe(300);
+    expect(r.stdout).toMatch(/FLEET 3\/3 — VALID/);
+    expect(existsSync(join(workdir, 'summary.json'))).toBe(false);
+  });
+
+  it('GEN_INDEX set (even with GEN_COUNT>1) stays in single-generator mode', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubFleetK6({ 1: ok }, 3);
+    const r = runWrapper(binDir, workdir, { GEN_COUNT: '3', GEN_INDEX: '1', FLEET_CLI });
+    expect(r.status, r.stderr).toBe(0);
+    expect(existsSync(join(workdir, 'summary.json'))).toBe(true);
+    expect(existsSync(join(workdir, 'gen-1'))).toBe(false);
+    expect(existsSync(join(workdir, 'fleet'))).toBe(false);
+  });
+
+  it('GEN_COUNT=1 is single-generator mode', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    expect(runWrapper(binDir, workdir, { GEN_COUNT: '1', FLEET_CLI }).status).toBe(0);
+    expect(existsSync(join(workdir, 'summary.json'))).toBe(true);
+    expect(existsSync(join(workdir, 'gen-0'))).toBe(false);
+  });
+
+  it('tags each generator\'s output lines and keeps a per-generator run.log', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubFleetK6({ 0: ok, 1: ok }, 2);
+    const r = runWrapper(binDir, workdir, { GEN_COUNT: '2', FLEET_CLI });
+    expect(r.stdout).toContain('[gen-1] stub-k6 output line 0');
+    expect(readFileSync(join(workdir, 'gen-1', 'run.log'), 'utf8')).toContain('[gen-1] stub-k6 output line 1');
+    expect(readFileSync(join(workdir, 'gen-1', 'run.log'), 'utf8')).not.toContain('[gen-0]');
+  });
+
+  it('warns when the fleet is larger than the CPUs it will share', () => {
+    const workdir = join(root, 'w');
+    const perGen: Record<number, { code: number; writeSummary: boolean }> = {};
+    for (let i = 0; i < 64; i++) perGen[i] = ok;
+    const binDir = stubFleetK6(perGen, 64);
+    const r = runWrapper(binDir, workdir, { GEN_COUNT: '64', FLEET_CLI });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/64 generators .*CPU/);
+  });
+});
+
+describe('bin/run.sh single-task fleet mode — exit code precedence', () => {
+  const runFleet = (perGen: Record<number, { code: number; writeSummary: boolean }>) => {
+    const binDir = stubFleetK6(perGen, 3);
+    return runWrapper(binDir, join(root, 'w'), { GEN_COUNT: '3', FLEET_CLI });
+  };
+
+  it('all generators succeed -> 0', () => {
+    expect(runFleet({ 0: ok, 1: ok, 2: ok }).status).toBe(0);
+  });
+
+  it('one threshold breach -> 99, the CI gate', () => {
+    expect(runFleet({ 0: ok, 1: { code: 99, writeSummary: true }, 2: ok }).status).toBe(99);
+  });
+
+  it('a generator that never ran beats a threshold breach: 107 + 99 -> 107', () => {
+    const r = runFleet({ 0: { code: 107, writeSummary: false }, 1: { code: 99, writeSummary: true }, 2: ok });
+    expect(r.status).toBe(107);
+    const fleet = JSON.parse(readFileSync(join(root, 'w', 'fleet', 'summary.json'), 'utf8'));
+    expect(fleet.validity.valid).toBe(false);
+    expect(fleet.fleet.generators_reported).toBe(2);
+  });
+
+  it('a bogus success (exit 0, no summary) is promoted to 1 per generator', () => {
+    const r = runFleet({ 0: ok, 1: { code: 0, writeSummary: false }, 2: ok });
+    expect(r.status).toBe(1);
+    expect(readFileSync(join(root, 'w', 'gen-1', 'exit_code'), 'utf8').trim()).toBe('1');
+  });
+
+  it('every generator crashing still exits with the crash code and ships nothing but logs', () => {
+    const r = runFleet({ 0: { code: 107, writeSummary: false }, 1: { code: 107, writeSummary: false }, 2: { code: 107, writeSummary: false } });
+    expect(r.status).toBe(107);
+    expect(r.stderr).toMatch(/fleet merge failed/);
+    expect(existsSync(join(root, 'w', 'fleet', 'summary.json'))).toBe(false);
+  });
+});
+
+describe('bin/run.sh single-task fleet mode — shipping', () => {
+  it('ships every generator\'s artifacts and the fleet artifacts to their own s3 keys', () => {
+    const workdir = join(root, 'w');
+    const awsLog = join(root, 'aws.log');
+    const binDir = stubFleetK6({ 0: ok, 1: ok, 2: ok }, 3);
+    stubAws(binDir);
+    const r = runWrapper(binDir, workdir, {
+      GEN_COUNT: '3', FLEET_CLI, INDEX_CLI,
+      RESULTS_URI: 's3://bucket/prefix', AWS_REGION: 'test-region-1', AWS_STUB_LOG: awsLog,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const expected: string[] = [];
+    for (const i of [0, 1, 2]) {
+      expected.push(
+        `s3://bucket/prefix/index/dt=2026-08-29/r1-gen${i}.json`,
+        `s3://bucket/prefix/runs/r1/gen-${i}/summary.json`,
+        `s3://bucket/prefix/runs/r1/gen-${i}/run.log`,
+      );
+    }
+    expected.push(
+      's3://bucket/prefix/index/dt=2026-08-29/r1-fleet.json',
+      's3://bucket/prefix/runs/r1/fleet/summary.json',
+      's3://bucket/prefix/runs/r1/fleet/run.log',
+    );
+    expect([...awsDestinations(awsLog)].sort()).toEqual(expected.sort());
+    expect(r.stderr).toContain('12 of 12 artifacts shipped');
+  });
+
+  it('places a crashed generator\'s run.log under its own gen-<i> key using the fleet summary\'s identity', () => {
+    const workdir = join(root, 'w');
+    const awsLog = join(root, 'aws.log');
+    const binDir = stubFleetK6({ 0: { code: 107, writeSummary: false }, 1: ok }, 2);
+    stubAws(binDir);
+    const r = runWrapper(binDir, workdir, {
+      GEN_COUNT: '2', FLEET_CLI, INDEX_CLI,
+      RESULTS_URI: 's3://bucket/prefix', AWS_REGION: 'test-region-1', AWS_STUB_LOG: awsLog,
+    });
+    expect(r.status).toBe(107);
+    const dests = awsDestinations(awsLog);
+    expect(dests).toContain('s3://bucket/prefix/runs/r1/gen-0/run.log');
+    expect(dests).not.toContain('s3://bucket/prefix/runs/r1/gen-0/summary.json');
+    expect(dests).toContain('s3://bucket/prefix/runs/r1/gen-1/summary.json');
+    expect(dests).toContain('s3://bucket/prefix/runs/r1/fleet/summary.json');
+  });
+
+  it('copies per-generator and fleet artifacts into subdirectories of a local RESULTS_URI', () => {
+    const workdir = join(root, 'w');
+    const results = join(root, 'results');
+    const binDir = stubFleetK6({ 0: ok, 1: ok }, 2);
+    const r = runWrapper(binDir, workdir, { GEN_COUNT: '2', FLEET_CLI, RESULTS_URI: results });
+    expect(r.status, r.stderr).toBe(0);
+    expect(existsSync(join(results, 'gen-0', 'summary.json'))).toBe(true);
+    expect(existsSync(join(results, 'gen-1', 'run.log'))).toBe(true);
+    expect(existsSync(join(results, 'fleet', 'summary.json'))).toBe(true);
+    expect(existsSync(join(results, 'fleet', 'run.log'))).toBe(true);
+    expect(existsSync(join(results, 'summary.json'))).toBe(false);
+  });
+
+  it('a failed merge still ships the per-generator artifacts and keeps k6\'s verdict', () => {
+    const workdir = join(root, 'w');
+    const results = join(root, 'results');
+    const binDir = stubFleetK6({ 0: ok, 1: { code: 99, writeSummary: true } }, 2);
+    const r = runWrapper(binDir, workdir, { GEN_COUNT: '2', FLEET_CLI: 'false', RESULTS_URI: results });
+    expect(r.status).toBe(99);
+    expect(r.stderr).toMatch(/fleet merge failed/);
+    expect(existsSync(join(results, 'gen-0', 'summary.json'))).toBe(true);
+    expect(existsSync(join(results, 'gen-1', 'summary.json'))).toBe(true);
+    expect(existsSync(join(results, 'fleet', 'summary.json'))).toBe(false);
+  });
+});

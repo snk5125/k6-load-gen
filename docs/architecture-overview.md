@@ -614,7 +614,7 @@ The operator is entirely responsible for `RUN_ID` uniqueness. The code provides 
 
 ### Local Results URI
 
-When `RESULTS_URI` is a local directory path, files are written flat (no date partitions), `index.json` is not generated, and the fleet-style S3 key layout does not apply. `KEEP_RAW=1` is still honored.
+When `RESULTS_URI` is a local directory path, files are written flat (no date partitions), `index.json` is not generated, and the fleet-style S3 key layout does not apply. `KEEP_RAW=1` is still honored. In single-task fleet mode the flat layout gains `gen-<i>/` and `fleet/` subdirectories so the generators do not overwrite each other.
 
 ---
 
@@ -697,9 +697,9 @@ k6 evaluates `handleSummary` in a fresh runtime where all module-scope state is 
 
 The `thresholds` field in `RunSummary` changed structure between version 1 and version 2. Version 1: flat map of threshold name to result. Version 2: `{ slo: [...], structural_count: N }`. Downstream consumers must check `schema_version` before parsing thresholds.
 
-### No Central Fleet Coordinator
+### No Cross-Task Fleet Coordinator
 
-Fleet generators are completely independent processes. There is no shared state, no leader election, and no cross-generator coordination. Each generator produces its own artifacts. Aggregating results across a fleet run requires a post-processing step outside this tool.
+Fleet generators are independent k6 processes. There is no shared state, no leader election, and no cross-generator coordination while they run. Each generator produces its own artifacts. Within one task, `bin/run.sh` can run all N generators itself (`GEN_COUNT=N`, `GEN_INDEX` unset) and merge their summaries and timelines afterwards with `src/fleet/` — a post-run merge, not a coordinator. Across tasks, the same merge is available as `dist/fleet-cli.js merge` on downloaded `gen-<i>/` directories.
 
 ### No Run-to-Run Scheduling
 

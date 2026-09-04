@@ -544,8 +544,8 @@ If `TYPES` names a type not declared in the profile's `types` map, the run fails
 
 | Variable | Required | Description |
 |---|---|---|
-| `GEN_INDEX` | No | This generator's zero-based index in the fleet. Default: 0. |
-| `GEN_COUNT` | No | Total number of generators in the fleet. Default: 1. |
+| `GEN_COUNT` | No | Total number of generators in the fleet. Default: 1. With `GEN_INDEX` unset and `GEN_COUNT>1`, the container runs all N generators itself (single-task fleet, see [Fleet Runs](#10-fleet-runs)). |
+| `GEN_INDEX` | No | This generator's zero-based index in the fleet. Set it to run exactly one generator in this container (multi-task fleet). Unset means 0 for a single generator, or "all of them" when `GEN_COUNT>1`. |
 
 ### Transport-Specific
 
@@ -784,9 +784,25 @@ bin/run.sh
 
 ## 10. Fleet Runs
 
-A fleet is a set of independent k6-load-gen containers running simultaneously against the same endpoint, each with a unique `GEN_INDEX`. There is no central coordinator — generators run independently and each deposits its own artifacts under its own S3 key path.
+A fleet is N generators sharing one `RUN_ID`, each with its own `GEN_INDEX`. Each generator targets `total_eps / gen_count` as its share of the fleet's aggregate load: with `GEN_COUNT=4` and `knee_eps=10000`, each generator targets 2500 EPS. Every event carries `(run_id, gen_index, seq)`, so the aggregator sees N distinct generator identities either way. There are two ways to run one.
 
-Each generator targets `total_eps / gen_count` as its share of the fleet's aggregate load. With `GEN_COUNT=4` and `knee_eps=10000`, each generator targets 2500 EPS.
+### Single-task fleet (one container)
+
+Set `GEN_COUNT=N` and leave `GEN_INDEX` unset. `bin/run.sh` starts N k6 processes (`GEN_INDEX` 0..N-1), each in its own `gen-<i>/` directory, waits for all of them, and merges their results:
+
+- **One merged `summary.json`** with the same schema-2 shape as a single run plus a `fleet` block. Counts are summed; `rate.*` is already fleet-wide and is taken from one generator; `send_failures.rate` is recomputed from summed passes and fails; each SLO threshold is `ok` only if it was ok on every generator; `validity.valid` is the AND of the generators and requires every generator to have reported; `send_duration` percentiles are the **worst generator's** (an upper bound, not a true fleet percentile). `fleet.generators[]` keeps each generator's own exit code, counts, drift and validity so an unhealthy one stays visible, and `fleet.aggregation` records which rule produced each field.
+- **One merged `timeline.jsonl`**, bucket by bucket (counts summed, `failure_rate` recomputed from summed samples, percentiles worst-of).
+- **Every generator's own artifacts** as well, under `gen-<i>/` (local) or `runs/<run_id>/gen-<i>/` (S3), exactly as a multi-task fleet would produce them. The fleet artifacts land under `fleet/` and `runs/<run_id>/fleet/`, with index and timeline stems `<run_id>-fleet`.
+
+The container's **exit code** is the worst generator's, with an explicit precedence: any non-zero code other than 99 (a crash or config error) beats 99, because a generator that never ran means the fleet's numbers are not a measurement; 99 beats 0. Console output is tagged `[gen-<i>]` per line.
+
+Limits: the N processes share one task's CPUs, so this mode is for generator identity and one-launch convenience, not for scaling past a single task — the wrapper warns when `GEN_COUNT` exceeds the CPUs it can see. Memory and `raw.json` output scale with N; set `EMIT_TIMELINE=0` for very large in-task fleets. `smoke` runs its fixed iterations in every generator.
+
+`dist/fleet-cli.js merge <out-dir> <gen-dir>...` is the same merge, usable by hand on any set of `gen-<i>/` directories — for example after downloading a multi-task fleet's summaries from S3.
+
+### Multi-task fleet (one container per generator)
+
+Set a distinct `GEN_INDEX` in each container. There is no central coordinator — generators run independently and each deposits its own artifacts under its own S3 key path.
 
 **Configuration across all containers in the fleet (same):**
 

@@ -64,7 +64,8 @@ The container command is never overridden. Configuration is environment only.
 | `TARGET` | profile | Destination endpoint. Overrides the profile's `target.endpoint` |
 | `TYPES` | all declared | Comma-separated subset of the profile's log types to run |
 | `DURATION_SCALE` | `1` | Multiplies every stage duration. `0.02` = wiring check; `1` = full run. No effect on `smoke`, which always runs its 20 iterations |
-| `GEN_INDEX` / `GEN_COUNT` | `0` / `1` | Fleet slicing. N tasks with `GEN_COUNT=N` together offer the full rate. `smoke` runs in full on every task |
+| `GEN_COUNT` | `1` | Fleet size. On its own, `GEN_COUNT=N` runs N generators inside this one task and ships one merged fleet summary plus each generator's own. Exit code is the worst generator's. `smoke` runs in full per generator |
+| `GEN_INDEX` | unset | Set it (`0`..`N-1`) to run one generator per task instead; N tasks with the same `RUN_ID` and `GEN_COUNT` together offer the full rate |
 | `RESULTS_URI` | — | `s3://bucket/prefix` or a local path. Unset means artifacts die with the container |
 | `EMIT_TIMELINE` | profile, else `1` | Bucketed timeline output. Costs throughput at very high rates |
 | `KEEP_RAW` | `0` | Also ship the gzipped raw sample stream |

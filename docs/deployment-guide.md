@@ -616,16 +616,51 @@ The code only calls `s3:PutObject`. Bucket versioning, lifecycle policies, acces
 
 ## 10. Fleet Runs on ECS
 
-A fleet run is multiple concurrent `run-task` invocations with matching `PROFILE` and `RUN_ID` but distinct `GEN_INDEX` values. Generators are independent — there is no cross-task coordination.
+There are two ways to run a fleet. A **single-task fleet** is one `run-task` with `GEN_COUNT=N` and no `GEN_INDEX`: the container runs all N generators and ships one merged fleet summary alongside each generator's own artifacts. A **multi-task fleet** is N concurrent `run-task` invocations with matching `PROFILE` and `RUN_ID` but distinct `GEN_INDEX` values; generators are independent and there is no cross-task coordination.
 
-### Fleet Invocation Pattern
+### Single-Task Fleet (one `run-task`)
+
+Use this when you want N generator identities on the wire and one artifact set to read, and one task's CPUs are enough for the rate. Size the task for N k6 processes — roughly N× the single-generator CPU and memory — and expect a warning in the log if `GEN_COUNT` exceeds the task's vCPUs.
+
+```bash
+aws ecs run-task \
+  --cluster my-cluster \
+  --task-definition k6-load-gen \
+  --launch-type FARGATE \
+  --network-configuration "..." \
+  --overrides '{
+    "containerOverrides": [{
+      "name": "k6-load-gen",
+      "environment": [
+        { "name": "RUN_ID",    "value": "fleet-001" },
+        { "name": "GEN_COUNT", "value": "3" }
+      ]
+    }]
+  }'
+```
+
+Artifacts, for `RESULTS_URI=s3://bucket/prefix`:
+
+```
+s3://bucket/prefix/runs/fleet-001/gen-0/summary.json     (+ run.log, timeline.jsonl)
+s3://bucket/prefix/runs/fleet-001/gen-1/summary.json
+s3://bucket/prefix/runs/fleet-001/gen-2/summary.json
+s3://bucket/prefix/runs/fleet-001/fleet/summary.json     merged; `fleet` block + per-generator breakdown
+s3://bucket/prefix/runs/fleet-001/fleet/run.log          the rendered fleet report
+s3://bucket/prefix/index/dt=<date>/fleet-001-fleet.json  one index row with is_fleet: true
+s3://bucket/prefix/timeline/dt=<date>/fleet-001-fleet.jsonl
+```
+
+The task's exit code is the worst generator's: a crash or config error (any code other than 0 or 99) beats a threshold breach (99), which beats success. A generator that produced no summary still has its `run.log` shipped under its own `gen-<i>/` key, and the fleet summary is marked invalid and names it.
+
+### Multi-Task Fleet Invocation Pattern
 
 A Lambda function or CI job that orchestrates fleet runs should:
 
 1. Generate a single `RUN_ID` for the fleet (e.g., `fleet-2026-08-31-a1b2c3`)
 2. Call `aws ecs run-task` once per generator, passing `GEN_INDEX=0`, `GEN_INDEX=1`, etc.
 3. Wait for all tasks to reach `STOPPED` state
-4. Collect and aggregate `summary.json` from each generator's S3 path
+4. Collect `summary.json` from each generator's S3 path and merge them: download the `gen-<i>/` directories and run `node /app/dist/fleet-cli.js merge <out-dir> gen-0 gen-1 gen-2` (available inside the image, or from a checkout via `npx tsx src/fleet/cli.ts`) to get the same merged fleet summary a single-task fleet produces
 
 Example for a three-generator fleet:
 
