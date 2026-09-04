@@ -68,6 +68,26 @@ jobs:
           node dist/fleet-launch.js --help > /dev/null
           mv /tmp/nm node_modules
 
+  # The operator-side launcher image (Dockerfile `--target launcher`, on its
+  # own slim base) is built and smoke-run here because it cannot be built on
+  # every developer machine: it is the one target whose base is not shared
+  # with the generator image. It must start as an unprivileged user, carry
+  # the AWS CLI, and answer with its usage.
+  launcher-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the launcher image
+        run: docker build --target launcher -t k6-fleet-launch:ci .
+
+      - name: Smoke-run it
+        run: |
+          docker run --rm k6-fleet-launch:ci | grep -q 'fleet-launch run'
+          docker run --rm --entrypoint sh k6-fleet-launch:ci -c 'test "$(id -u)" != 0 && aws --version'
+          if docker run --rm k6-fleet-launch:ci merge --results-uri /bad --run-id x --count 1; then exit 1; fi
+          docker image inspect k6-fleet-launch:ci --format 'launcher image size: {{.Size}} bytes'
+
   # Spec §7 calls for "Vector: Automated in CI"; this job is that gate — the
   # drift gate above only proves the committed tree matches what the
   # renderer emits today, never that either one is actually correct

@@ -656,8 +656,9 @@ The task's exit code is the worst generator's: a crash or config error (any code
 
 ### Multi-Task Fleet in One Command
 
-A small operator image, built from the same Dockerfile with `--target launcher`, carries the
-launcher and nothing else. Run it as a local container with your AWS credentials and it
+A small operator image, built from the same Dockerfile with `--target launcher` on its own
+Debian-slim Node base (`LAUNCHER_BASE_IMAGE`, about half the size of the generator image), carries
+the launcher and the AWS CLI and nothing else. Run it as a local container with your AWS credentials and it
 launches N tasks (injecting `GEN_INDEX` 0..N-1 and `GEN_COUNT=N` into your overrides file, and a
 generated `RUN_ID` if the file has none), waits for them all to stop, downloads every generator's
 artifacts, merges them exactly as a single-task fleet would, uploads `runs/<run_id>/fleet/*` and
@@ -673,8 +674,9 @@ docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_
 ```
 
 The generator image carries the same launcher too (`<generator image> fleet-launch run ...`), so a
-machine that already has it needs nothing else; the dedicated image is only smaller. Build both
-from the same commit so the merge and the summaries it reads agree.
+machine that already has it needs nothing else. Build both from the same commit so the merge and
+the summaries it reads agree. A hardened pipeline substitutes the launcher's base with
+`--build-arg LAUNCHER_BASE_IMAGE=<image>`; it must be glibc-based with `apt` and Node 22+.
 
 - `-e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro"` gives the container's `aws` CLI your profiles,
   credentials and SSO cache read-only; `-e AWS_PROFILE -e AWS_REGION` pass the selected profile and

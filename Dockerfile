@@ -7,6 +7,13 @@
 # CLI v2 installer's prerequisites: curl, unzip, and a writable /tmp for the
 # install, plus glibc at runtime (the installer ships a glibc binary).
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/nodejs-22:latest
+# The operator-side launcher image (stage 4, `--target launcher`) has its own
+# base: it needs Node and the AWS CLI and nothing else, and the generator's
+# hardened base is 640 MB before either. Debian slim keeps it near 450 MB. It
+# is a separate argument so hardening can substitute it independently; the
+# substitute must be glibc-based (the official AWS CLI v2 bundle is), with
+# apt available, and provide Node 22+ on PATH.
+ARG LAUNCHER_BASE_IMAGE=node:22-slim
 
 # ---- stage 1: pinned k6 binary with the tcp extension ----
 # Built now even though only otlp-grpc and null exist, because Plan 2's syslog
@@ -66,16 +73,35 @@ RUN set -eux; \
     rm -rf /tmp/awscliv2.zip /tmp/aws
 
 # ---- stage 4: launcher (build with --target launcher) ----
-# The operator-side image: fleet-launch and nothing else. Same base, same
-# AWS CLI, same source revision as the generator image below — so the merge
-# it performs matches the summaries that generator wrote — but without k6,
-# xk6, the protos or the profiles, which a laptop launching tasks never runs.
+# The operator-side image: fleet-launch and nothing else, on its own slim
+# base (LAUNCHER_BASE_IMAGE), built from the same source revision as the
+# generator image below so the merge it performs matches the summaries that
+# generator wrote. No k6, xk6, protos or profiles: a laptop launching tasks
+# never runs them.
 #   docker build --target launcher -t k6-fleet-launch .
 #   docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE \
 #     -e AWS_REGION -v "$PWD:/w:ro" k6-fleet-launch run --overrides /w/ov.json ...
-FROM awscli AS launcher
+FROM ${LAUNCHER_BASE_IMAGE} AS launcher
+# AWS CLI v2 again, on a Debian base this time: the install tools are fetched
+# for the duration of the install and removed. Same architecture detection
+# as the runtime stage below, for the same reason (see that comment).
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl unzip; \
+    case "$(uname -m)" in \
+      x86_64) AWS_ARCH=x86_64 ;; \
+      aarch64) AWS_ARCH=aarch64 ;; \
+      *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscliv2.zip; \
+    unzip -q /tmp/awscliv2.zip -d /tmp; \
+    /tmp/aws/install; \
+    rm -rf /tmp/awscliv2.zip /tmp/aws; \
+    apt-get purge -y --auto-remove curl unzip; \
+    rm -rf /var/lib/apt/lists/*
 COPY --from=jsbuild /build/dist/fleet-launch.js /app/dist/fleet-launch.js
-USER 1001
+# The node images ship an unprivileged `node` user (uid 1000).
+USER node
 ENTRYPOINT ["node", "/app/dist/fleet-launch.js"]
 CMD ["--help"]
 
