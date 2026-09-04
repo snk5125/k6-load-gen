@@ -49,11 +49,11 @@ Locally:
 docker run --rm -e PROFILE=local-null -e RUN_ID=smoke k6-load-gen:latest
 ```
 
-A multi-task fleet in one command, run from your machine with the same image and your AWS
-credentials: N tasks launched, waited for, merged from S3 into one fleet summary.
+A multi-task fleet in one command, from a small operator image built with `--target launcher`
+and your AWS credentials: N tasks launched, waited for, merged from S3 into one fleet summary.
 
 ```bash
-docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION -v "$PWD:/w:ro" <image> fleet-launch run --cluster "$CLUSTER" --task-definition k6-load-gen --network-configuration "$NETCFG" --overrides /w/overrides.json --count 4
+docker build --target launcher -t k6-fleet-launch . && docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION -v "$PWD:/w:ro" k6-fleet-launch run --cluster "$CLUSTER" --task-definition k6-load-gen --network-configuration "$NETCFG" --overrides /w/overrides.json --count 4
 ```
 
 Task-definition examples, IAM notes and fleet patterns: **[docs/deployment-guide.md](docs/deployment-guide.md)**.

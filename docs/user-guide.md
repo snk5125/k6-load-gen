@@ -798,7 +798,7 @@ The container's **exit code** (also recorded as `fleet.exit_code` in the merged 
 
 Limits: the N processes share one task's CPUs, so this mode is for generator identity and one-launch convenience, not for scaling past a single task — the wrapper warns when `GEN_COUNT` exceeds the CPUs it can see. Memory and `raw.json` output scale with N; set `EMIT_TIMELINE=0` for very large in-task fleets. `smoke` runs its fixed iterations in every generator.
 
-The same merge runs for a multi-task fleet through the image's operator mode, `fleet-launch` (see the [Deployment Guide](deployment-guide.md#10-fleet-runs-on-ecs)), which launches the N tasks, waits, merges from S3 and uploads the fleet artifacts in one command.
+The same merge runs for a multi-task fleet through `fleet-launch`, shipped as a small operator image built with `--target launcher` and also present in the generator image (see the [Deployment Guide](deployment-guide.md#10-fleet-runs-on-ecs)); it launches the N tasks, waits, merges from S3 and uploads the fleet artifacts in one command.
 
 ### Multi-task fleet (one container per generator)
 

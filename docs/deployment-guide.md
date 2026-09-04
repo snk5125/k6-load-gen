@@ -656,7 +656,8 @@ The task's exit code is the worst generator's: a crash or config error (any code
 
 ### Multi-Task Fleet in One Command
 
-The image doubles as the launcher. Run it as a local container with your AWS credentials and it
+A small operator image, built from the same Dockerfile with `--target launcher`, carries the
+launcher and nothing else. Run it as a local container with your AWS credentials and it
 launches N tasks (injecting `GEN_INDEX` 0..N-1 and `GEN_COUNT=N` into your overrides file, and a
 generated `RUN_ID` if the file has none), waits for them all to stop, downloads every generator's
 artifacts, merges them exactly as a single-task fleet would, uploads `runs/<run_id>/fleet/*` and
@@ -664,8 +665,16 @@ the `-fleet` index row, prints the fleet report, and exits with `fleet.exit_code
 checkout: Docker and credentials are the only requirements on the operator's machine.
 
 ```bash
-docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION -v "$PWD:/w:ro" <account>.dkr.ecr.<region>.amazonaws.com/<repo>:v3 fleet-launch run --cluster <gen-cluster> --task-definition k6-load-gen --network-configuration "$NETCFG" --overrides /w/sweep-125k.json --count 4
+docker build --target launcher -t k6-fleet-launch:v4 .
 ```
+
+```bash
+docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION -v "$PWD:/w:ro" k6-fleet-launch:v4 run --cluster <gen-cluster> --task-definition k6-load-gen --network-configuration "$NETCFG" --overrides /w/sweep-125k.json --count 4
+```
+
+The generator image carries the same launcher too (`<generator image> fleet-launch run ...`), so a
+machine that already has it needs nothing else; the dedicated image is only smaller. Build both
+from the same commit so the merge and the summaries it reads agree.
 
 - `-e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro"` gives the container's `aws` CLI your profiles,
   credentials and SSO cache read-only; `-e AWS_PROFILE -e AWS_REGION` pass the selected profile and
@@ -683,7 +692,7 @@ docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_
 To merge a fleet launched any other way, or to redo a merge:
 
 ```bash
-docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION <image> fleet-launch merge --results-uri s3://<bucket>/<prefix> --run-id <run_id> --count 4
+docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION k6-fleet-launch:v4 merge --results-uri s3://<bucket>/<prefix> --run-id <run_id> --count 4
 ```
 
 Each generator ships its k6 exit status as `runs/<run_id>/gen-<i>/exit_code`, so a merge from S3

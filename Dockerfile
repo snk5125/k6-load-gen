@@ -32,8 +32,8 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build:cli
 
-# ---- stage 3: runtime ----
-FROM ${BASE_IMAGE}
+# ---- stage 3: base + AWS CLI (shared by the launcher and the runtime) ----
+FROM ${BASE_IMAGE} AS awscli
 USER 0
 
 # Node, npm, curl, unzip, tar, and gzip all ship in ubi9/nodejs-22 already —
@@ -65,6 +65,22 @@ RUN set -eux; \
     /tmp/aws/install; \
     rm -rf /tmp/awscliv2.zip /tmp/aws
 
+# ---- stage 4: launcher (build with --target launcher) ----
+# The operator-side image: fleet-launch and nothing else. Same base, same
+# AWS CLI, same source revision as the generator image below — so the merge
+# it performs matches the summaries that generator wrote — but without k6,
+# xk6, the protos or the profiles, which a laptop launching tasks never runs.
+#   docker build --target launcher -t k6-fleet-launch .
+#   docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE \
+#     -e AWS_REGION -v "$PWD:/w:ro" k6-fleet-launch run --overrides /w/ov.json ...
+FROM awscli AS launcher
+COPY --from=jsbuild /build/dist/fleet-launch.js /app/dist/fleet-launch.js
+USER 1001
+ENTRYPOINT ["node", "/app/dist/fleet-launch.js"]
+CMD ["--help"]
+
+# ---- stage 5: runtime (the default target) ----
+FROM awscli
 COPY --from=k6build /xk6/k6 /usr/local/bin/k6
 COPY --from=jsbuild /build/dist /app/dist
 COPY src      /app/src
