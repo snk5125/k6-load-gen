@@ -303,21 +303,39 @@ function mergeInto(m: MergeArgs, work: string, bucket: string, prefix: string, r
 
 // ---------------------------------------------------------------- arg parsing
 
+const FLAGS_WITH_VALUE = new Set([
+  'cluster', 'task-definition', 'network-configuration', 'overrides', 'count', 'launch-type', 'region',
+  'results-uri', 'run-id', 'poll-interval', 'timeout', 'work-dir', 'exit-codes',
+]);
+const FLAGS_BARE = new Set(['no-merge', 'help']);
+
 export function parseArgs(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (!a.startsWith('--')) throw new Error(`unexpected argument ${JSON.stringify(a)}`);
+    if (!a.startsWith('--')) {
+      const prev = argv[i - 1];
+      const hint =
+        prev === undefined
+          ? 'the first argument after the mode must be an option'
+          : FLAGS_BARE.has(prev.replace(/^--/, ''))
+            ? `${prev} takes no value`
+            : `${prev} already had its value ${JSON.stringify(argv[i - 1])}; check quoting of the previous option (an unquoted network configuration splits on spaces)`;
+      throw new Error(`unexpected argument ${JSON.stringify(a)}: ${hint}`);
+    }
     // Both `--key value` and `--key=value` are accepted; the aws CLI takes
     // both, and a task-definition with a revision (`family:12`) or an ARN
     // is a value operators reasonably write either way.
     const eq = a.indexOf('=');
+    const key = eq > 2 ? a.slice(2, eq) : a.slice(2);
+    if (!FLAGS_WITH_VALUE.has(key) && !FLAGS_BARE.has(key)) {
+      throw new Error(`unknown option --${key}\n${USAGE}`);
+    }
     if (eq > 2) {
-      out[a.slice(2, eq)] = a.slice(eq + 1);
+      out[key] = a.slice(eq + 1);
       continue;
     }
-    const key = a.slice(2);
-    if (key === 'no-merge' || key === 'help') {
+    if (FLAGS_BARE.has(key)) {
       out[key] = true;
       continue;
     }

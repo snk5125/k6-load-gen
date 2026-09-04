@@ -152,6 +152,12 @@ describe('fleet-launch helpers', () => {
     expect(() => parseArgs(['--count'])).toThrow(/needs a value/);
   });
 
+  it('explains a stray positional and rejects an unknown option', () => {
+    expect(() => parseArgs(['--no-merge', 'k6-loadgen:7'])).toThrow(/unexpected argument "k6-loadgen:7": --no-merge takes no value/);
+    expect(() => parseArgs(['--task-definition', 'k6-loadgen', 'k6-loadgen:7'])).toThrow(/already had its value/);
+    expect(() => parseArgs(['--task-defintion', 'x'])).toThrow(/unknown option --task-defintion/);
+  });
+
   it('generates a run id that passes the key allowlist', () => {
     expect(generateRunId(new Date('2026-09-04T12:34:56.000Z'))).toMatch(/^fleet-20260904-123456Z-[0-9a-f]{8}$/);
   });
