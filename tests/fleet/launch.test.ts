@@ -33,14 +33,24 @@ case "$1 $2" in
   "ecs describe-tasks")
     d=$(cat "$AWS_STUB_DESCRIBE" 2>/dev/null || echo 0); d=$((d+1)); echo $d > "$AWS_STUB_DESCRIBE"
     if [ "$d" -lt 2 ]; then status=RUNNING; else status=STOPPED; fi
-    n=$(cat "$AWS_STUB_COUNT"); codes="\${AWS_STUB_EXIT_CODES:-}"
+    n=$(cat "$AWS_STUB_COUNT"); codes="\${AWS_STUB_EXIT_CODES:-}"; missing="\${AWS_STUB_MISSING:-}"
+    # Only the ARNs asked for are described; a task listed in AWS_STUB_MISSING
+    # comes back in failures[] (reason MISSING) from the second poll on, the
+    # way ECS answers for a task that aged out. A sidecar container is listed
+    # FIRST so a by-position read would pick the wrong exit code.
     printf '{"tasks":['
-    i=1; while [ $i -le $n ]; do
-      code=$(echo "$codes" | cut -d, -f$i); [ -z "$code" ] && code=0
-      [ $i -gt 1 ] && printf ','
-      printf '{"taskArn":"arn:aws:ecs:x:1:task/c/t%s","lastStatus":"%s","stoppedReason":"Essential container in task exited","containers":[{"name":"k6-load-gen","exitCode":%s}]}' "$i" "$status" "$code"
+    first=1; i=1; while [ $i -le $n ]; do
+      case " $* " in *"task/c/t$i "*)
+        if [ "$d" -ge 2 ] && [ "$missing" = "$i" ]; then :; else
+          code=$(echo "$codes" | cut -d, -f$i); [ -z "$code" ] && code=0
+          [ $first -eq 0 ] && printf ','; first=0
+          printf '{"taskArn":"arn:aws:ecs:x:1:task/c/t%s","lastStatus":"%s","stoppedReason":"Essential container in task exited","containers":[{"name":"sidecar","exitCode":0},{"name":"k6-load-gen","exitCode":%s}]}' "$i" "$status" "$code"
+        fi ;;
+      esac
       i=$((i+1))
     done
+    printf '],"failures":['
+    if [ "$d" -ge 2 ] && [ -n "$missing" ]; then printf '{"arn":"arn:aws:ecs:x:1:task/c/t%s","reason":"MISSING"}' "$missing"; fi
     printf ']}\\n' ;;
   "s3 cp")
     case "$*" in *--recursive*)
@@ -123,7 +133,7 @@ describe('fleet-launch helpers', () => {
   });
 
   it('generates a run id that passes the key allowlist', () => {
-    expect(generateRunId(new Date('2026-09-04T12:34:56.000Z'))).toMatch(/^fleet-20260904-123456Z-[0-9a-f]{4}$/);
+    expect(generateRunId(new Date('2026-09-04T12:34:56.000Z'))).toMatch(/^fleet-20260904-123456Z-[0-9a-f]{8}$/);
   });
 });
 
@@ -198,9 +208,30 @@ describe('fleet-launch run (spawned, stub aws)', () => {
     const ov = overridesFile([{ name: 'PROFILE', value: 'hec' }]);
     const r = run(binDir, ['run', ...baseArgs, '--overrides', ov, '--count', '1', '--no-merge']);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout.trim()).toMatch(/^fleet-\d{8}-\d{6}Z-[0-9a-f]{4}$/);
+    expect(r.stdout.trim()).toMatch(/^fleet-\d{8}-\d{6}Z-[0-9a-f]{8}$/);
     const env = JSON.parse(r.lines[0].slice(r.lines[0].indexOf('{'), r.lines[0].lastIndexOf('}') + 1)).containerOverrides[0].environment;
     expect(env.find((e: { name: string }) => e.name === 'RUN_ID').value).toBe(r.stdout.trim());
+  });
+
+  it('--no-merge exits with the same precedence as a merged fleet', () => {
+    const binDir = stubAws();
+    const ov = overridesFile([{ name: 'RUN_ID', value: 'f1' }]);
+    expect(run(binDir, ['run', ...baseArgs, '--overrides', ov, '--count', '3', '--no-merge'], { AWS_STUB_EXIT_CODES: '0,99,0' }).status).toBe(99);
+    rmSync(join(root, 'count'), { force: true }); rmSync(join(root, 'describe'), { force: true }); rmSync(join(root, 'aws.log'), { force: true });
+    expect(run(binDir, ['run', ...baseArgs, '--overrides', ov, '--count', '3', '--no-merge'], { AWS_STUB_EXIT_CODES: '99,137,0' }).status).toBe(137);
+  });
+
+  it('treats a task that aged out of describe-tasks as stopped and takes its exit code from the artifact', () => {
+    const binDir = stubAws();
+    fakeBucket('k6-runs', { 0: { sent: 300, exit: '0' }, 1: { sent: 500, exit: '0' } }, 2);
+    const ov = overridesFile([{ name: 'RUN_ID', value: 'f1' }, { name: 'RESULTS_URI', value: 's3://bucket/k6-runs' }]);
+    const work = join(root, 'work');
+    // Task 1 (gen-0) disappears from the API from the second poll on.
+    const r = run(binDir, ['run', ...baseArgs, '--overrides', ov, '--count', '2', '--work-dir', work], { AWS_STUB_MISSING: '1' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/gen-0: .*no longer returned by describe-tasks/);
+    const fleet = JSON.parse(readFileSync(join(work, 'fleet', 'summary.json'), 'utf8'));
+    expect(fleet.fleet.generators.map((g: { exit_code: number }) => g.exit_code)).toEqual([0, 0]);
   });
 
   it('refuses an overrides file that sets GEN_INDEX, and a merge with no RESULTS_URI, before launching anything', () => {

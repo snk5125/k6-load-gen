@@ -87,10 +87,23 @@ export function isFleetSummary(s: unknown): s is FleetSummary {
  * with no summary, counts as 1 (the same rule bin/run.sh applies).
  */
 export function fleetExitCode(inputs: GeneratorInput[]): number {
+  return exitCodePrecedence(
+    [...inputs]
+      .sort((a, b) => a.gen_index - b.gen_index)
+      .map((i) => {
+        const code = i.exit_code ?? 1;
+        return code === 0 && i.summary === null ? 1 : code;
+      }),
+  );
+}
+
+/** The precedence alone, over per-generator codes in generator order (null =
+ * unknown, counted as 1). Used by fleetExitCode and by fleet-launch's
+ * --no-merge path so both agree. */
+export function exitCodePrecedence(codes: Array<number | null>): number {
   let out = 0;
-  for (const i of [...inputs].sort((a, b) => a.gen_index - b.gen_index)) {
-    let code = i.exit_code ?? 1;
-    if (code === 0 && i.summary === null) code = 1;
+  for (const c of codes) {
+    const code = c ?? 1;
     if (code === 0) continue;
     if (code !== 99) {
       if (out === 0 || out === 99) out = code;

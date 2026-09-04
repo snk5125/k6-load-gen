@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fleetExitCode, isFleetSummary, mergeSummaries, type GeneratorInput } from '../../src/fleet/merge.ts';
+import { exitCodePrecedence, fleetExitCode, isFleetSummary, mergeSummaries, type GeneratorInput } from '../../src/fleet/merge.ts';
 import type { RunSummary } from '../../src/summary/build.ts';
 
 /** A schema-2 single-generator summary, shaped like buildSummary's output. */
@@ -193,6 +193,16 @@ describe('fleetExitCode — the precedence bin/run.sh applies, available to ever
   it('is carried on the merged summary', () => {
     const f = mergeSummaries([ok(0), input(1, gen(1, {}, 3), 99), ok(2)], 3);
     expect(f.fleet.exit_code).toBe(99);
+  });
+});
+
+describe('exitCodePrecedence — the rule over bare codes', () => {
+  it('crash beats 99 beats 0; unknown counts as 1; lowest index wins among crashes', () => {
+    expect(exitCodePrecedence([0, 0])).toBe(0);
+    expect(exitCodePrecedence([0, 99, 0])).toBe(99);
+    expect(exitCodePrecedence([99, 137, 0])).toBe(137);
+    expect(exitCodePrecedence([3, 107])).toBe(3);
+    expect(exitCodePrecedence([0, null])).toBe(1);
   });
 });
 

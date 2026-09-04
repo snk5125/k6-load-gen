@@ -596,11 +596,12 @@ s3://my-bucket/k6-runs/timeline/dt=2026-08-31/sweep-001-gen0.jsonl
 s3://my-bucket/k6-runs/runs/sweep-001/gen-0/summary.json
 s3://my-bucket/k6-runs/runs/sweep-001/gen-0/run.log
 s3://my-bucket/k6-runs/runs/sweep-001/gen-0/raw.json.gz   (only if KEEP_RAW=1)
+s3://my-bucket/k6-runs/runs/sweep-001/gen-0/exit_code     k6's exit status, one line
 ```
 
 ### Collision Behavior
 
-`summary.json`, `run.log`, and `raw.json.gz` use keys that contain only `run_id` and `gen_index`. Two runs with the same `RUN_ID` and `GEN_INDEX` silently overwrite each other's files. This is the primary reason `RUN_ID` must be generated uniquely per invocation.
+`summary.json`, `run.log`, `exit_code`, and `raw.json.gz` use keys that contain only `run_id` and `gen_index`. Two runs with the same `RUN_ID` and `GEN_INDEX` silently overwrite each other's files. This is the primary reason `RUN_ID` must be generated uniquely per invocation.
 
 `index` and `timeline` keys include a `dt=` date partition. Runs on different calendar days land in different partitions. Same-day runs with the same `RUN_ID` still collide.
 

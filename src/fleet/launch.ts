@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { artifactKeys, indexRecord } from '../storage/keys.ts';
 import { mergeDirs } from './cli.ts';
+import { exitCodePrecedence } from './merge.ts';
 
 /**
  * fleet-launch: a multi-task fleet in one command.
@@ -83,8 +84,18 @@ export function injectGenerator(o: Overrides, i: number, n: number, runId?: stri
 
 export function generateRunId(now = new Date()): string {
   const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z').replace('T', '-');
-  const rand = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  // 32 bits of randomness on top of a one-second stamp: two launches in the
+  // same second would otherwise share a run prefix and merge each other's
+  // generators silently.
+  const rand = Math.floor(Math.random() * 0x100000000).toString(16).padStart(8, '0');
   return `fleet-${stamp}-${rand}`;
+}
+
+/** In-process sleep; no dependency on an external `sleep` binary or its
+ * handling of fractional seconds. */
+function sleepSeconds(s: number): void {
+  if (s <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, s * 1000);
 }
 
 function aws(args: string[], region?: string): string {
@@ -134,27 +145,66 @@ function launch(a: RunArgs, overrides: Overrides, runId: string): Launched[] {
 
 interface Stopped { genIndex: number; taskArn: string; exitCode: number | null; stoppedReason: string }
 
-function waitForStop(a: RunArgs, launched: Launched[]): Stopped[] {
-  const deadline = Date.now() + a.timeout * 1000;
-  for (;;) {
+interface DescribedTask {
+  taskArn: string;
+  lastStatus: string;
+  stoppedReason?: string;
+  containers?: Array<{ name?: string; exitCode?: number }>;
+}
+
+/** DescribeTasks accepts at most 100 ARNs per call. */
+const DESCRIBE_CHUNK = 100;
+
+function describeTasks(a: RunArgs, arns: string[]): { tasks: DescribedTask[]; missing: Set<string> } {
+  const tasks: DescribedTask[] = [];
+  const missing = new Set<string>();
+  for (let i = 0; i < arns.length; i += DESCRIBE_CHUNK) {
+    const chunk = arns.slice(i, i + DESCRIBE_CHUNK);
     const res = JSON.parse(
-      aws(['ecs', 'describe-tasks', '--cluster', a.cluster, '--tasks', ...launched.map((l) => l.taskArn), '--output', 'json'], a.region),
-    ) as { tasks?: Array<{ taskArn: string; lastStatus: string; stoppedReason?: string; containers?: Array<{ exitCode?: number }> }> };
-    const tasks = res.tasks ?? [];
+      aws(['ecs', 'describe-tasks', '--cluster', a.cluster, '--tasks', ...chunk, '--output', 'json'], a.region),
+    ) as { tasks?: DescribedTask[]; failures?: Array<{ arn?: string; reason?: string }> };
+    tasks.push(...(res.tasks ?? []));
+    for (const f of res.failures ?? []) if (f.arn && f.reason === 'MISSING') missing.add(f.arn);
+  }
+  return { tasks, missing };
+}
+
+/** The k6 container's exit code: matched by the name the overrides file
+ * addresses, so a sidecar listed first cannot stand in for it. */
+function containerExit(t: DescribedTask, containerName: string | undefined): number | null {
+  const cs = t.containers ?? [];
+  const c = (containerName && cs.find((x) => x.name === containerName)) || (cs.length === 1 ? cs[0] : undefined);
+  return c && typeof c.exitCode === 'number' ? c.exitCode : null;
+}
+
+function waitForStop(a: RunArgs, launched: Launched[], containerName: string | undefined): Stopped[] {
+  const deadline = Date.now() + a.timeout * 1000;
+  // Once a task has been seen STOPPED (or has aged out of the API) its
+  // result is final; only the rest are described on the next poll. ECS
+  // drops a stopped task from DescribeTasks roughly an hour after it stops,
+  // so a fast generator in a long fleet would otherwise look pending forever.
+  const done = new Map<string, Stopped>();
+  for (;;) {
+    const open = launched.filter((l) => !done.has(l.taskArn));
+    const { tasks, missing } = describeTasks(a, open.map((l) => l.taskArn));
     const byArn = new Map(tasks.map((t) => [t.taskArn, t]));
-    const pending = launched.filter((l) => byArn.get(l.taskArn)?.lastStatus !== 'STOPPED');
-    if (pending.length === 0) {
-      return launched.map((l) => {
-        const t = byArn.get(l.taskArn)!;
-        const code = t.containers?.[0]?.exitCode;
-        return { ...l, exitCode: typeof code === 'number' ? code : null, stoppedReason: t.stoppedReason ?? '' };
-      });
+    for (const l of open) {
+      const t = byArn.get(l.taskArn);
+      if (t && t.lastStatus === 'STOPPED') {
+        done.set(l.taskArn, { ...l, exitCode: containerExit(t, containerName), stoppedReason: t.stoppedReason ?? '' });
+      } else if (!t && missing.has(l.taskArn)) {
+        log(`gen-${l.genIndex}: ${l.taskArn} is no longer returned by describe-tasks (stopped tasks age out after about an hour); its exit code is unknown here and will come from its exit_code artifact`);
+        done.set(l.taskArn, { ...l, exitCode: null, stoppedReason: 'aged out of describe-tasks before it was observed stopped' });
+      }
     }
+    if (done.size === launched.length) return launched.map((l) => done.get(l.taskArn)!);
+    const pending = launched.length - done.size;
     if (Date.now() > deadline) {
-      throw new Error(`timed out after ${a.timeout}s waiting for ${pending.length} task(s) to stop: ${pending.map((p) => p.taskArn).join(', ')}`);
+      const arns = launched.filter((l) => !done.has(l.taskArn)).map((l) => l.taskArn);
+      throw new Error(`timed out after ${a.timeout}s waiting for ${pending} task(s) to stop: ${arns.join(', ')}`);
     }
-    log(`${launched.length - pending.length}/${launched.length} stopped; waiting ${a.pollInterval}s`);
-    spawnSync('sleep', [String(a.pollInterval)]);
+    log(`${done.size}/${launched.length} stopped; waiting ${a.pollInterval}s`);
+    sleepSeconds(a.pollInterval);
   }
 }
 
@@ -178,7 +228,14 @@ export function mergeFromS3(m: MergeArgs): { report: string; exitCode: number } 
   const runUri = `s3://${bucket}/${p}runs/${m.runId}/`;
   const work = m.workDir ?? mkdtempSync(join(tmpdir(), 'fleet-launch-'));
   mkdirSync(work, { recursive: true });
+  try {
+    return mergeInto(m, work, bucket, prefix, runUri);
+  } finally {
+    if (!m.workDir) rmSync(work, { recursive: true, force: true });
+  }
+}
 
+function mergeInto(m: MergeArgs, work: string, bucket: string, prefix: string, runUri: string): { report: string; exitCode: number } {
   log(`downloading ${runUri}`);
   aws(['s3', 'cp', runUri, work, '--recursive', '--only-show-errors'], m.region);
 
@@ -214,7 +271,6 @@ export function mergeFromS3(m: MergeArgs): { report: string; exitCode: number } 
     aws(['s3', 'cp', file, `s3://${bucket}/${key}`, '--only-show-errors'], m.region);
   }
   log(`uploaded ${uploads.length} fleet artifacts under s3://${bucket}/${keys.summary.replace(/summary\.json$/, '')}`);
-  if (!m.workDir) rmSync(work, { recursive: true, force: true });
   return { report, exitCode: fleet.fleet.exit_code };
 }
 
@@ -324,12 +380,14 @@ export function main(argv: string[]): number {
   log(`run_id ${runId}, ${count} generators, task definition ${a.taskDefinition}`);
 
   const launched = launch(a, overrides, runId);
-  const stopped = waitForStop(a, launched);
+  const stopped = waitForStop(a, launched, overrides.containerOverrides?.[0]?.name);
   for (const s of stopped) log(`gen-${s.genIndex} stopped: exit ${s.exitCode ?? '?'}${s.stoppedReason ? ` (${s.stoppedReason})` : ''}`);
 
   if (!a.merge) {
     process.stdout.write(`${runId}\n`);
-    return stopped.every((s) => s.exitCode === 0) ? 0 : 1;
+    // Same precedence as the merged fleet.exit_code, over the codes ECS
+    // reported: a crash beats 99, 99 beats 0, unknown counts as 1.
+    return exitCodePrecedence(stopped.map((s) => s.exitCode));
   }
   const { report, exitCode } = mergeFromS3({
     resultsUri: a.resultsUri!,

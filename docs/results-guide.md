@@ -33,6 +33,7 @@ For `RESULTS_URI=s3://<bucket>/<prefix>` (prefix may be empty):
 | `<prefix>/runs/<run_id>/gen-<i>/summary.json` | generator | the full nested report for one generator |
 | `<prefix>/runs/<run_id>/fleet/summary.json` | single-task fleet | the merged report; **read this one first when it exists** |
 | `<prefix>/runs/<run_id>/gen-<i>/run.log` and `.../fleet/run.log` | generator / fleet | console output; the fleet log is the rendered fleet report |
+| `<prefix>/runs/<run_id>/gen-<i>/exit_code` | generator | k6's exit status, one line; present even when the generator wrote no summary |
 | `<prefix>/timeline/dt=<YYYY-MM-DD>/<run_id>-gen<i>.jsonl` and `...-fleet.jsonl` | generator / fleet | 15-second buckets of throughput, failures and latency |
 | `<prefix>/runs/<run_id>/gen-<i>/raw.json.gz` | generator, only with `KEEP_RAW=1` | every k6 sample; rarely needed |
 

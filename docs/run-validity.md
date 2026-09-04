@@ -86,8 +86,10 @@ first error line, then fix the path between the task and the target.
 
 ## Condition 3: a fleet member produced no summary
 
-**Reason text:** `gen-<i> produced no summary.json (exit <code>)`. Only on single-task fleets;
-the fleet's `exit_code` takes that generator's code under the crash-beats-99 precedence.
+**Reason text:** `gen-<i> produced no summary.json (exit <code>)`. Appears on any merged fleet,
+single-task or merged from S3 with `fleet-launch merge`; the fleet's `exit_code` takes that
+generator's code under the crash-beats-99 precedence. The code comes from the generator's own
+`exit_code` artifact, or from what ECS reported for its container when it never wrote to S3.
 
 **What it means.** That k6 process ended before `handleSummary` ran, so the fleet offered less
 load than configured and the merged counts do not describe the intended run. The exit code says
