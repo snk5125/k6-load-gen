@@ -191,4 +191,5 @@ and the test suite.
 
 - **[docs/deployment-guide.md](docs/deployment-guide.md)** — ECS task definitions, IAM, fleets
 - **[docs/user-guide.md](docs/user-guide.md)** — profiles, log types, interpreting output
+- **[docs/results-guide.md](docs/results-guide.md)** — reading the S3 artifacts: key layout, every field, merge rules, worked examples
 - **[docs/architecture-overview.md](docs/architecture-overview.md)** — internals
