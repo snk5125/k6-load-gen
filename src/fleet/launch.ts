@@ -98,6 +98,10 @@ function sleepSeconds(s: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, s * 1000);
 }
 
+function region(r: string | undefined, args: string[]): string[] {
+  return r ? [...args, '--region', r] : args;
+}
+
 function aws(args: string[], region?: string): string {
   const full = region ? [...args, '--region', region] : args;
   const r = spawnSync('aws', full, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -247,7 +251,30 @@ function mergeInto(m: MergeArgs, work: string, bucket: string, prefix: string, r
     if (!existsSync(join(d, 'exit_code')) && typeof ecs === 'number') {
       writeFileSync(join(d, 'exit_code'), `${ecs}\n`);
     }
-    if (!existsSync(join(d, 'summary.json'))) log(`gen-${i}: no summary.json in S3`);
+    const summaryPath = join(d, 'summary.json');
+    if (!existsSync(summaryPath)) {
+      log(`gen-${i}: no summary.json in S3`);
+      genDirs.push(d);
+      continue;
+    }
+    // A generator's timeline is NOT under runs/<run_id>/: it is partitioned
+    // by date as timeline/dt=<date>/<run_id>-gen<i>.jsonl (src/storage/keys.ts),
+    // so the recursive download above never sees it. Fetch it by key into
+    // the place the merge reads (gen-<i>/timeline.jsonl); absent means the
+    // run had timelines off, which the merge already tolerates.
+    try {
+      const s = JSON.parse(readFileSync(summaryPath, 'utf8')) as { run?: { run_id?: string; started_at?: string } };
+      if (s.run?.run_id && s.run?.started_at) {
+        const key = artifactKeys({ run_id: s.run.run_id, gen_index: i, started_at: s.run.started_at }, prefix).timeline;
+        const r = spawnSync('aws', region(m.region, ['s3', 'cp', `s3://${bucket}/${key}`, join(d, 'timeline.jsonl'), '--only-show-errors']), { encoding: 'utf8' });
+        if (r.status !== 0) {
+          rmSync(join(d, 'timeline.jsonl'), { force: true });
+          log(`gen-${i}: no timeline at s3://${bucket}/${key} (timelines off for this run, or not shipped)`);
+        }
+      }
+    } catch (e) {
+      log(`gen-${i}: could not read summary.json to locate its timeline: ${e instanceof Error ? e.message : String(e)}`);
+    }
     genDirs.push(d);
   }
 

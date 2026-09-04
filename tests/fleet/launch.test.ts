@@ -53,8 +53,12 @@ case "$1 $2" in
     if [ "$d" -ge 2 ] && [ -n "$missing" ]; then printf '{"arn":"arn:aws:ecs:x:1:task/c/t%s","reason":"MISSING"}' "$missing"; fi
     printf ']}\\n' ;;
   "s3 cp")
-    case "$*" in *--recursive*)
-      rel=$(echo "$3" | sed -e 's|^s3://[^/]*/||'); mkdir -p "$4"; cp -R "$AWS_STUB_S3_DIR/$rel"/. "$4"/ 2>/dev/null; ;;
+    case "$*" in
+      *--recursive*)
+        rel=$(echo "$3" | sed -e 's|^s3://[^/]*/||'); mkdir -p "$4"; cp -R "$AWS_STUB_S3_DIR/$rel"/. "$4"/ 2>/dev/null ;;
+      "s3 cp s3://"*)
+        # download of one object: serve it from the fixture, or fail like a missing key
+        rel=$(echo "$3" | sed -e 's|^s3://[^/]*/||'); [ -f "$AWS_STUB_S3_DIR/$rel" ] && cp "$AWS_STUB_S3_DIR/$rel" "$4" || exit 1 ;;
     esac ;;
 esac
 exit 0
@@ -80,8 +84,12 @@ const summary = (i: number, count: number, sent: number, ok = true) =>
     warnings: [],
   });
 
-/** A fake bucket on disk: <s3dir>/<prefix>/runs/f1/gen-<i>/... */
-function fakeBucket(prefix: string, gens: Record<number, { sent: number; exit: string; ok?: boolean }>, count: number): string {
+const bucketLine = (sent: number) =>
+  JSON.stringify({ bucket_start: '2026-08-29T10:00:00.000Z', bucket_sec: 15, events_sent: sent, events_attempted: sent, eps: sent / 15, send_failures: 0, send_samples: 1, failure_rate: 0, send_duration_p50: null, send_duration_p95: null, send_duration_p99: null, dropped_iterations: 0 });
+
+/** A fake bucket on disk, laid out like the real one: runs/f1/gen-<i>/... plus
+ * the date-partitioned timeline/dt=2026-08-29/f1-gen<i>.jsonl objects. */
+function fakeBucket(prefix: string, gens: Record<number, { sent: number; exit: string; ok?: boolean; timeline?: boolean }>, count: number): string {
   const s3 = join(root, 's3');
   for (const [i, g] of Object.entries(gens)) {
     const d = join(s3, prefix, 'runs', 'f1', `gen-${i}`);
@@ -89,6 +97,11 @@ function fakeBucket(prefix: string, gens: Record<number, { sent: number; exit: s
     writeFileSync(join(d, 'summary.json'), summary(Number(i), count, g.sent, g.ok ?? true));
     writeFileSync(join(d, 'exit_code'), g.exit + '\n');
     writeFileSync(join(d, 'run.log'), 'log\n');
+    if (g.timeline !== false) {
+      const t = join(s3, prefix, 'timeline', 'dt=2026-08-29');
+      mkdirSync(t, { recursive: true });
+      writeFileSync(join(t, `f1-gen${i}.jsonl`), bucketLine(g.sent) + '\n');
+    }
   }
   return s3;
 }
@@ -159,16 +172,35 @@ describe('fleet-launch run (spawned, stub aws)', () => {
 
     expect(r.lines.filter((l) => l.startsWith('ecs describe-tasks')).length).toBeGreaterThanOrEqual(2);
     expect(r.lines.some((l) => l.startsWith('s3 cp s3://bucket/k6-runs/runs/f1/') && l.includes('--recursive'))).toBe(true);
+    // The per-generator timelines live in the date partition, not under runs/; both must be fetched by key.
+    expect(r.lines).toContain(`s3 cp s3://bucket/k6-runs/timeline/dt=2026-08-29/f1-gen0.jsonl ${join(work, 'gen-0', 'timeline.jsonl')} --only-show-errors`);
+    expect(r.lines).toContain(`s3 cp s3://bucket/k6-runs/timeline/dt=2026-08-29/f1-gen1.jsonl ${join(work, 'gen-1', 'timeline.jsonl')} --only-show-errors`);
     const uploads = r.lines.filter((l) => /^s3 cp \S+ s3:\/\//.test(l)).map((l) => l.split(' ')[3]).sort();
     expect(uploads).toEqual([
       's3://bucket/k6-runs/index/dt=2026-08-29/f1-fleet.json',
       's3://bucket/k6-runs/runs/f1/fleet/run.log',
       's3://bucket/k6-runs/runs/f1/fleet/summary.json',
+      's3://bucket/k6-runs/timeline/dt=2026-08-29/f1-fleet.jsonl',
     ]);
     expect(r.stdout).toMatch(/FLEET 2\/2 — VALID/);
     const fleet = JSON.parse(readFileSync(join(work, 'fleet', 'summary.json'), 'utf8'));
     expect(fleet.metrics.events_sent.count).toBe(800);
     expect(fleet.fleet.generators.map((g: { exit_code: number }) => g.exit_code)).toEqual([0, 0]);
+    const tl = readFileSync(join(work, 'fleet', 'timeline.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(tl).toHaveLength(1);
+    expect(tl[0].events_sent).toBe(800);
+  });
+
+  it('merges without a timeline when the run had them off, and says so', () => {
+    const binDir = stubAws();
+    fakeBucket('k6-runs', { 0: { sent: 1, exit: '0', timeline: false }, 1: { sent: 1, exit: '0', timeline: false } }, 2);
+    const ov = overridesFile([{ name: 'RUN_ID', value: 'f1' }, { name: 'RESULTS_URI', value: 's3://bucket/k6-runs' }]);
+    const work = join(root, 'work');
+    const r = run(binDir, ['run', ...baseArgs, '--overrides', ov, '--count', '2', '--work-dir', work]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/gen-0: no timeline at/);
+    expect(existsSync(join(work, 'fleet', 'timeline.jsonl'))).toBe(false);
+    expect(r.lines.some((l) => l.includes('f1-fleet.jsonl'))).toBe(false);
   });
 
   it('uses the ECS container exit code for a generator that shipped nothing, and exits with it', () => {

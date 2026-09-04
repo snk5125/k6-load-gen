@@ -688,7 +688,10 @@ docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_
 
 Each generator ships its k6 exit status as `runs/<run_id>/gen-<i>/exit_code`, so a merge from S3
 carries the same per-generator verdicts as an in-task fleet. A generator that never wrote to S3
-takes the exit code ECS reported for its container.
+takes the exit code ECS reported for its container. The merge also fetches each generator's
+timeline from its date partition (`timeline/dt=<date>/<run_id>-gen<i>.jsonl`), which a recursive
+copy of `runs/<run_id>/` alone would miss; a hand merge must copy those objects into
+`gen-<i>/timeline.jsonl` itself.
 
 ### Multi-Task Fleet by Hand
 
