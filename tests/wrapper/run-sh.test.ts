@@ -431,8 +431,9 @@ describe('bin/run.sh artifact-shipping accounting', () => {
     const out = join(root, 'out');
     const binDir = stubK6({ code: 0, writeSummary: true });
     const r = runWrapper(binDir, workdir, { RESULTS_URI: out });
-    // summary.json and run.log; no timeline, since EMIT_TIMELINE is 0 here.
-    expect(r.stderr).toContain('2 of 2 artifacts shipped');
+    // summary.json, run.log and exit_code; no timeline, since EMIT_TIMELINE is 0 here.
+    expect(r.stderr).toContain('3 of 3 artifacts shipped');
+    expect(readFileSync(join(out, 'exit_code'), 'utf8').trim()).toBe('0');
     expect(r.status).toBe(0);
   });
 
@@ -447,7 +448,7 @@ describe('bin/run.sh artifact-shipping accounting', () => {
       AWS_STUB_LOG: join(root, 'aws.log'),
     });
     // index.json, summary.json, run.log — no timeline, no raw at EMIT_TIMELINE=0.
-    expect(r.stderr).toContain('3 of 3 artifacts failed to upload');
+    expect(r.stderr).toContain('4 of 4 artifacts failed to upload');
     // ...and the verdict is still k6's own.
     expect(r.status).toBe(0);
   });
@@ -506,7 +507,7 @@ describe('bin/run.sh s3:// upload path (stub aws on PATH)', () => {
   // writes no index.json, so the entire §9.3 key layout was unexercised by
   // anything except the unit tests of the key builder itself.
 
-  it('uploads exactly the five spec §9.3 keys, to the right destinations', () => {
+  it('uploads exactly the six per-run keys, to the right destinations', () => {
     const workdir = join(root, 'w');
     const awsLog = join(root, 'aws.log');
     const binDir = stubK6({
@@ -538,11 +539,13 @@ describe('bin/run.sh s3:// upload path (stub aws on PATH)', () => {
       's3://bucket/prefix/runs/r1/gen-0/summary.json',
       's3://bucket/prefix/runs/r1/gen-0/run.log',
       's3://bucket/prefix/runs/r1/gen-0/raw.json.gz',
+      // k6's exit status, so a fleet merged later from S3 knows how this generator ended.
+      's3://bucket/prefix/runs/r1/gen-0/exit_code',
     ].sort());
-    expect(r.stderr).toContain('5 of 5 artifacts shipped');
+    expect(r.stderr).toContain('6 of 6 artifacts shipped');
   });
 
-  it('omits raw.json.gz when KEEP_RAW is not set, and ships the other four', () => {
+  it('omits raw.json.gz when KEEP_RAW is not set, and ships the other five', () => {
     const workdir = join(root, 'w');
     const awsLog = join(root, 'aws.log');
     const binDir = stubK6({
@@ -564,7 +567,7 @@ describe('bin/run.sh s3:// upload path (stub aws on PATH)', () => {
     expect(r.status).toBe(0);
     const dests = awsDestinations(awsLog);
     expect(dests).not.toContain('s3://bucket/prefix/runs/r1/gen-0/raw.json.gz');
-    expect(dests.length).toBe(4);
+    expect(dests.length).toBe(5);
   });
 
   it('honours an empty prefix — s3://bucket with no path', () => {
@@ -757,6 +760,7 @@ describe('bin/run.sh single-task fleet mode — shipping', () => {
         `s3://bucket/prefix/index/dt=2026-08-29/r1-gen${i}.json`,
         `s3://bucket/prefix/runs/r1/gen-${i}/summary.json`,
         `s3://bucket/prefix/runs/r1/gen-${i}/run.log`,
+        `s3://bucket/prefix/runs/r1/gen-${i}/exit_code`,
       );
     }
     expected.push(
@@ -765,7 +769,7 @@ describe('bin/run.sh single-task fleet mode — shipping', () => {
       's3://bucket/prefix/runs/r1/fleet/run.log',
     );
     expect([...awsDestinations(awsLog)].sort()).toEqual(expected.sort());
-    expect(r.stderr).toContain('12 of 12 artifacts shipped');
+    expect(r.stderr).toContain('15 of 15 artifacts shipped');
   });
 
   it('places a crashed generator\'s run.log under its own gen-<i> key using the fleet summary\'s identity', () => {
@@ -808,5 +812,23 @@ describe('bin/run.sh single-task fleet mode — shipping', () => {
     expect(existsSync(join(results, 'gen-0', 'summary.json'))).toBe(true);
     expect(existsSync(join(results, 'gen-1', 'summary.json'))).toBe(true);
     expect(existsSync(join(results, 'fleet', 'summary.json'))).toBe(false);
+  });
+});
+
+describe('bin/run.sh operator mode — `fleet-launch` dispatch', () => {
+  it('execs the launcher with the remaining arguments and runs nothing else', () => {
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    const launcher = join(root, 'launcher.sh');
+    writeFileSync(launcher, '#!/bin/sh\nprintf "%s\\n" "$@" > "$LAUNCH_ARGV"\nexit 7\n');
+    chmodSync(launcher, 0o755);
+    const workdir = join(root, 'w');
+    const r = spawnSync('sh', [RUN_SH, 'fleet-launch', 'run', '--count', '3'], {
+      env: { PATH: `${binDir}:${process.env.PATH ?? ''}`, WORKDIR: workdir, FLEET_LAUNCH_CLI: launcher, LAUNCH_ARGV: join(root, 'argv.txt') },
+      encoding: 'utf8',
+    });
+    expect(r.status).toBe(7);
+    expect(readFileSync(join(root, 'argv.txt'), 'utf8')).toBe('run\n--count\n3\n');
+    expect(existsSync(workdir)).toBe(false); // never got as far as the run path
+    expect(existsSync(join(workdir, 'k6-argv.txt'))).toBe(false);
   });
 });

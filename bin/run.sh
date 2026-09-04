@@ -28,6 +28,21 @@ K6_SCRIPT="${K6_SCRIPT:-/app/src/main.ts}"
 TIMELINE_CLI="${TIMELINE_CLI:-node /app/dist/timeline-cli.js}"
 INDEX_CLI="${INDEX_CLI:-node /app/dist/index-cli.js}"
 FLEET_CLI="${FLEET_CLI:-node /app/dist/fleet-cli.js}"
+FLEET_LAUNCH_CLI="${FLEET_LAUNCH_CLI:-node /app/dist/fleet-launch.js}"
+
+# --- Operator mode: `<image> fleet-launch ...` ------------------------------
+#
+# The same image doubles as the multi-task fleet launcher, run as a LOCAL
+# container by the operator (docker run ... <image> fleet-launch run ...).
+# Nothing below this block runs in that case: no WORKDIR, no k6, no
+# shipping — the launcher talks to ECS and S3 with the credentials the
+# operator handed the container, and exits with the fleet's verdict. This
+# is the only argument the entrypoint interprets; a plain run takes none.
+if [ "${1:-}" = "fleet-launch" ]; then
+  shift
+  # shellcheck disable=SC2086 # intentional word-splitting of the command
+  exec $FLEET_LAUNCH_CLI "$@"
+fi
 PROFILE_DIR="${PROFILE_DIR:-/app/profiles}"
 
 mkdir -p "$WORKDIR"
@@ -169,6 +184,7 @@ ship_s3_dir() {
   KEY_SUMMARY=$(cat "$KEYDIR/summary")
   KEY_RUN_LOG=$(cat "$KEYDIR/run_log")
   KEY_RAW=$(cat "$KEYDIR/raw")
+  KEY_EXIT_CODE=$(cat "$KEYDIR/exit_code")
 
   if [ -f "$DIR/summary.json" ]; then
     # shellcheck disable=SC2086
@@ -181,6 +197,7 @@ ship_s3_dir() {
     ship aws s3 cp "$DIR/summary.json" "s3://$BUCKET/$KEY_SUMMARY" --only-show-errors
   fi
   [ -f "$DIR/run.log" ] && ship aws s3 cp "$DIR/run.log" "s3://$BUCKET/$KEY_RUN_LOG" --only-show-errors
+  [ -f "$DIR/exit_code" ] && ship aws s3 cp "$DIR/exit_code" "s3://$BUCKET/$KEY_EXIT_CODE" --only-show-errors
   [ -f "$DIR/timeline.jsonl" ] && ship aws s3 cp "$DIR/timeline.jsonl" "s3://$BUCKET/$KEY_TIMELINE" --only-show-errors
   if [ "$KEEP_RAW" = "1" ] && [ -f "$DIR/raw.json" ]; then
     gzip -c "$DIR/raw.json" > "$DIR/raw.json.gz"
@@ -211,6 +228,7 @@ ship_local_dir() {
   mkdir -p "$DEST"
   [ -f "$SRC/summary.json" ] && ship cp "$SRC/summary.json" "$DEST/"
   [ -f "$SRC/run.log" ] && ship cp "$SRC/run.log" "$DEST/"
+  [ -f "$SRC/exit_code" ] && ship cp "$SRC/exit_code" "$DEST/"
   [ -f "$SRC/timeline.jsonl" ] && ship cp "$SRC/timeline.jsonl" "$DEST/"
   if [ "$KEEP_RAW" = "1" ] && [ -f "$SRC/raw.json" ]; then
     gzip -c "$SRC/raw.json" > "$SRC/raw.json.gz"
@@ -440,6 +458,10 @@ if [ "$K6_EXIT" -eq 0 ] && [ ! -f "$SUMMARY" ]; then
   echo "run.sh: k6 exited 0 but produced no summary.json — treating as failure" >&2
   K6_EXIT=1
 fi
+# Shipped beside summary.json so a fleet merged later from S3 (fleet-launch)
+# knows how this generator ended; the summary is written by k6 before the
+# code exists. Fleet mode writes the same file per generator directory.
+printf '%s\n' "$K6_EXIT" > "$WORKDIR/exit_code"
 
 if [ "$EMIT_TIMELINE" = "1" ] && [ -f "$RAW" ]; then
   # shellcheck disable=SC2086 # intentional word-splitting; TIMELINE_CLI must

@@ -798,11 +798,11 @@ The container's **exit code** (also recorded as `fleet.exit_code` in the merged 
 
 Limits: the N processes share one task's CPUs, so this mode is for generator identity and one-launch convenience, not for scaling past a single task — the wrapper warns when `GEN_COUNT` exceeds the CPUs it can see. Memory and `raw.json` output scale with N; set `EMIT_TIMELINE=0` for very large in-task fleets. `smoke` runs its fixed iterations in every generator.
 
-`dist/fleet-cli.js merge <out-dir> <gen-dir>...` is the same merge, usable by hand on any set of `gen-<i>/` directories — for example after downloading a multi-task fleet's summaries from S3.
+The same merge runs for a multi-task fleet through the image's operator mode, `fleet-launch` (see the [Deployment Guide](deployment-guide.md#10-fleet-runs-on-ecs)), which launches the N tasks, waits, merges from S3 and uploads the fleet artifacts in one command.
 
 ### Multi-task fleet (one container per generator)
 
-Set a distinct `GEN_INDEX` in each container. There is no central coordinator — generators run independently and each deposits its own artifacts under its own S3 key path.
+Set a distinct `GEN_INDEX` in each container, or let `fleet-launch` do it. There is no central coordinator while generators run — each deposits its own artifacts, including its k6 exit status as `gen-<i>/exit_code`, under its own S3 key path; the merge happens afterwards.
 
 **Configuration across all containers in the fleet (same):**
 

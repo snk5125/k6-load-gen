@@ -35,6 +35,7 @@ describe('artifactKeys', () => {
     expect(k.summary).toBe('k6/runs/run-1/gen-0/summary.json');
     expect(k.run_log).toBe('k6/runs/run-1/gen-0/run.log');
     expect(k.raw).toBe('k6/runs/run-1/gen-0/raw.json.gz');
+    expect(k.exit_code).toBe('k6/runs/run-1/gen-0/exit_code');
   });
 
   it('separates generators so a fleet cannot collide', () => {

@@ -65,13 +65,14 @@ export function emitKeys(
     summary: keys.summary,
     run_log: keys.run_log,
     raw: keys.raw,
+    exit_code: keys.exit_code,
   };
 }
 
 /**
  * Writes each key to its own file under `dir` (one bare value + trailing
  * newline per file, named `index`, `timeline`, `summary`, `run_log`,
- * `raw`). bin/run.sh reads each back with `KEY_X=$(cat "$dir/x")` —
+ * `raw`, `exit_code`). bin/run.sh reads each back with `KEY_X=$(cat "$dir/x")` —
  * command substitution of a file's CONTENT, which is never interpreted as
  * shell syntax, unlike `eval`/`source` of generated text.
  */

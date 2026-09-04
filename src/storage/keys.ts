@@ -15,6 +15,11 @@ export interface ArtifactKeys {
   summary: string;
   run_log: string;
   raw: string;
+  /** The k6 process's exit status, one line. Written by bin/run.sh AFTER k6
+   * exits (the summary itself is written by k6, before the code is known),
+   * so a multi-task fleet merged later from S3 still knows how each
+   * generator ended — see src/fleet/launch.ts. */
+  exit_code: string;
 }
 
 /**
@@ -65,6 +70,7 @@ export function artifactKeys(ref: RunRef, prefix: string): ArtifactKeys {
     summary: `${runDir}/summary.json`,
     run_log: `${runDir}/run.log`,
     raw: `${runDir}/raw.json.gz`,
+    exit_code: `${runDir}/exit_code`,
   };
 }
 

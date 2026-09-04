@@ -35,6 +35,7 @@ describe('emitKeys', () => {
       summary: 'k6/runs/r1/gen-0/summary.json',
       run_log: 'k6/runs/r1/gen-0/run.log',
       raw: 'k6/runs/r1/gen-0/raw.json.gz',
+      exit_code: 'k6/runs/r1/gen-0/exit_code',
     });
   });
 
@@ -124,6 +125,7 @@ describe('emitKeys — fleet summaries', () => {
       summary: 'k6/runs/r1/fleet/summary.json',
       run_log: 'k6/runs/r1/fleet/run.log',
       raw: 'k6/runs/r1/fleet/raw.json.gz',
+      exit_code: 'k6/runs/r1/fleet/exit_code',
     });
   });
 

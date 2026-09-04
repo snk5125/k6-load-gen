@@ -653,14 +653,50 @@ s3://bucket/prefix/timeline/dt=<date>/fleet-001-fleet.jsonl
 
 The task's exit code is the worst generator's: a crash or config error (any code other than 0 or 99) beats a threshold breach (99), which beats success. A generator that produced no summary still has its `run.log` shipped under its own `gen-<i>/` key, and the fleet summary is marked invalid and names it.
 
-### Multi-Task Fleet Invocation Pattern
+### Multi-Task Fleet in One Command
 
-A Lambda function or CI job that orchestrates fleet runs should:
+The image doubles as the launcher. Run it as a local container with your AWS credentials and it
+launches N tasks (injecting `GEN_INDEX` 0..N-1 and `GEN_COUNT=N` into your overrides file, and a
+generated `RUN_ID` if the file has none), waits for them all to stop, downloads every generator's
+artifacts, merges them exactly as a single-task fleet would, uploads `runs/<run_id>/fleet/*` and
+the `-fleet` index row, prints the fleet report, and exits with `fleet.exit_code`. No Node, no
+checkout: Docker and credentials are the only requirements on the operator's machine.
+
+```bash
+docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION -v "$PWD:/w:ro" <account>.dkr.ecr.<region>.amazonaws.com/<repo>:v3 fleet-launch run --cluster <gen-cluster> --task-definition k6-load-gen --network-configuration "$NETCFG" --overrides /w/sweep-125k.json --count 4
+```
+
+- `-e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro"` gives the container's `aws` CLI your profiles,
+  credentials and SSO cache read-only; `-e AWS_PROFILE -e AWS_REGION` pass the selected profile and
+  region through unchanged. Static keys work too: `-e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY
+  -e AWS_SESSION_TOKEN`.
+- `-v "$PWD:/w:ro"` mounts the directory holding the overrides file.
+- The overrides file must not set `GEN_INDEX`; the launcher assigns one per task. `RESULTS_URI`
+  is read from the file, or passed with `--results-uri` when it lives in the task definition.
+- `--no-merge` stops after the tasks are stopped and prints the `RUN_ID`. `--poll-interval` (15 s)
+  and `--timeout` (6 h) bound the wait. `--launch-type` defaults to `FARGATE`.
+- The launcher needs, with the operator's credentials, `ecs:RunTask`, `iam:PassRole` on both task
+  roles, `ecs:DescribeTasks`, and `s3:ListBucket` / `s3:GetObject` / `s3:PutObject` on the run
+  prefix. The task role itself stays `s3:PutObject` only.
+
+To merge a fleet launched any other way, or to redo a merge:
+
+```bash
+docker run --rm -e HOME=/aws -v "$HOME/.aws:/aws/.aws:ro" -e AWS_PROFILE -e AWS_REGION <image> fleet-launch merge --results-uri s3://<bucket>/<prefix> --run-id <run_id> --count 4
+```
+
+Each generator ships its k6 exit status as `runs/<run_id>/gen-<i>/exit_code`, so a merge from S3
+carries the same per-generator verdicts as an in-task fleet. A generator that never wrote to S3
+takes the exit code ECS reported for its container.
+
+### Multi-Task Fleet by Hand
+
+Without the launcher, a Lambda function, CI job or shell loop that orchestrates fleet runs should:
 
 1. Generate a single `RUN_ID` for the fleet (e.g., `fleet-2026-08-31-a1b2c3`)
 2. Call `aws ecs run-task` once per generator, passing `GEN_INDEX=0`, `GEN_INDEX=1`, etc.
 3. Wait for all tasks to reach `STOPPED` state
-4. Collect `summary.json` from each generator's S3 path and merge them: download the `gen-<i>/` directories and run `node /app/dist/fleet-cli.js merge <out-dir> gen-0 gen-1 gen-2` (available inside the image, or from a checkout via `npx tsx src/fleet/cli.ts`) to get the same merged fleet summary a single-task fleet produces; its `fleet.exit_code` is the fleet verdict under the same precedence a single-task fleet exits with
+4. Merge with `fleet-launch merge` (above), which downloads the `gen-<i>/` directories, produces the same merged fleet summary a single-task fleet does, and uploads it; its `fleet.exit_code` is the fleet verdict under the same precedence a single-task fleet exits with
 
 Example for a three-generator fleet:
 

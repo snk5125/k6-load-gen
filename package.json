@@ -7,8 +7,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
-    "build:cli": "esbuild src/timeline/cli.ts --bundle --platform=node --format=cjs --outfile=dist/timeline-cli.js && esbuild src/storage/index-cli.ts --bundle --platform=node --format=cjs --outfile=dist/index-cli.js && esbuild src/fleet/cli.ts --bundle --platform=node --format=cjs --outfile=dist/fleet-cli.js && echo '{\"type\":\"commonjs\"}' > dist/package.json",
-    "aggregator-configs": "tsx src/aggregator/cli.ts"
+    "build:cli": "esbuild src/timeline/cli.ts --bundle --platform=node --format=cjs --outfile=dist/timeline-cli.js && esbuild src/storage/index-cli.ts --bundle --platform=node --format=cjs --outfile=dist/index-cli.js && esbuild src/fleet/cli.ts --bundle --platform=node --format=cjs --outfile=dist/fleet-cli.js && esbuild src/fleet/launch.ts --bundle --platform=node --format=cjs --outfile=dist/fleet-launch.js && echo '{\"type\":\"commonjs\"}' > dist/package.json",
+    "aggregator-configs": "tsx src/aggregator/cli.ts",
+    "fleet": "tsx src/fleet/launch.ts"
   },
   "devDependencies": {
     "@types/k6": "^1.0.2",

@@ -39,6 +39,7 @@
     "src/storage/index-cli.ts",
     "src/aggregator/cli.ts",
     "src/fleet/cli.ts",
+    "src/fleet/launch.ts",
     "tests/**/*.test.ts",
     "tests/aggregator/roundtrip/main.ts"
   ]
