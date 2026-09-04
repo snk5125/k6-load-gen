@@ -1,6 +1,9 @@
 export interface RunRef {
   run_id: string;
-  gen_index: number;
+  /** null = the merged FLEET artifact of a single-task fleet run (see
+   * src/fleet/merge.ts), which lives beside the per-generator `gen-<i>`
+   * directories under its own `fleet` stem so it can never collide with one. */
+  gen_index: number | null;
   started_at: string;
 }
 
@@ -48,8 +51,9 @@ export function artifactKeys(ref: RunRef, prefix: string): ArtifactKeys {
   }
   const p = normalisePrefix(prefix);
   const dt = partitionDate(ref.started_at);
-  const stem = `${ref.run_id}-gen${ref.gen_index}`;
-  const runDir = `${p}runs/${ref.run_id}/gen-${ref.gen_index}`;
+  const leaf = ref.gen_index === null ? 'fleet' : `gen-${ref.gen_index}`;
+  const stem = ref.gen_index === null ? `${ref.run_id}-fleet` : `${ref.run_id}-gen${ref.gen_index}`;
+  const runDir = `${p}runs/${ref.run_id}/${leaf}`;
 
   return {
     // Partitioned, one flat record per line -> future Athena tables.
@@ -104,6 +108,13 @@ export function indexRecord(summary: Record<string, unknown>): Record<string, Sc
 
   const failed = slo.filter((t) => t && t.ok === false).length;
 
+  // A fleet summary (src/fleet/merge.ts) has no single generator: its
+  // gen_index is null and must STAY null here — `num()` would coerce it to
+  // 0 and file the fleet row as generator 0 of its own run.
+  const fleet = summary.fleet;
+  const isFleet = typeof fleet === 'object' && fleet !== null;
+  const fleetBlock = (isFleet ? fleet : {}) as Record<string, unknown>;
+
   return {
     schema_version: typeof summary.schema_version === 'number' ? summary.schema_version : null,
     run_id: (run.run_id as string) ?? null,
@@ -111,8 +122,11 @@ export function indexRecord(summary: Record<string, unknown>): Record<string, Sc
     ended_at: (run.ended_at as string) ?? null,
     duration_sec: typeof run.duration_sec === 'number' ? run.duration_sec : null,
     k6_version: (run.k6_version as string) ?? null,
-    gen_index: num(gen.gen_index),
+    gen_index: isFleet ? null : num(gen.gen_index),
     gen_count: num(gen.gen_count),
+    is_fleet: isFleet,
+    generator_count: isFleet ? num(fleetBlock.generator_count) : null,
+    generators_reported: isFleet ? num(fleetBlock.generators_reported) : null,
     profile: (cfg.name as string) ?? null,
     transport: (target.transport as string) ?? null,
     scenario: scenarios.length > 0 ? scenarios.join(',') : null,

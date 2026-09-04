@@ -11,6 +11,10 @@ export interface TimelineBucket {
   events_attempted: number;
   eps: number;
   send_failures: number;
+  /** How many send_failures samples `failure_rate` was divided by. Carried
+   * so a fleet merge (src/fleet/timeline-merge.ts) can recompute an exact
+   * rate across generators instead of averaging rates. */
+  send_samples: number;
   failure_rate: number;
   send_duration_p50: number | null;
   send_duration_p95: number | null;

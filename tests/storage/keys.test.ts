@@ -212,3 +212,62 @@ describe('indexRecord', () => {
     expect(r.valid).toBeNull();
   });
 });
+
+describe('artifactKeys — fleet artifacts (gen_index null)', () => {
+  const fleetRef = { ...ref, gen_index: null };
+
+  it('uses a -fleet stem and a fleet/ run directory', () => {
+    const k = artifactKeys(fleetRef, 'k6');
+    expect(k.index).toBe('k6/index/dt=2026-08-29/run-1-fleet.json');
+    expect(k.timeline).toBe('k6/timeline/dt=2026-08-29/run-1-fleet.jsonl');
+    expect(k.summary).toBe('k6/runs/run-1/fleet/summary.json');
+    expect(k.run_log).toBe('k6/runs/run-1/fleet/run.log');
+    expect(k.raw).toBe('k6/runs/run-1/fleet/raw.json.gz');
+  });
+
+  it('never collides with any generator of the same run', () => {
+    const fleet = artifactKeys(fleetRef, 'k6');
+    for (const i of [0, 1, 7]) {
+      const gen = artifactKeys({ ...ref, gen_index: i }, 'k6');
+      expect(gen.index).not.toBe(fleet.index);
+      expect(gen.summary).not.toBe(fleet.summary);
+    }
+  });
+});
+
+describe('indexRecord — fleet rows', () => {
+  const single = {
+    run: { run_id: 'run-1' },
+    generator: { gen_index: 2, gen_count: 3 },
+    validity: { valid: true },
+  };
+  const fleet = {
+    run: { run_id: 'run-1' },
+    generator: { gen_index: null, gen_count: 3 },
+    fleet: { generator_count: 3, generators_reported: 2, generators: [], aggregation: {} },
+    validity: { valid: false },
+  };
+
+  it('marks a single-generator row as not a fleet, with null fleet columns', () => {
+    const r = indexRecord(single);
+    expect(r.is_fleet).toBe(false);
+    expect(r.gen_index).toBe(2);
+    expect(r.generator_count).toBeNull();
+    expect(r.generators_reported).toBeNull();
+  });
+
+  it('keeps gen_index null on a fleet row instead of coercing it to generator 0', () => {
+    const r = indexRecord(fleet);
+    expect(r.is_fleet).toBe(true);
+    expect(r.gen_index).toBeNull();
+    expect(r.gen_count).toBe(3);
+    expect(r.generator_count).toBe(3);
+    expect(r.generators_reported).toBe(2);
+  });
+
+  it('stays flat with the new columns', () => {
+    for (const v of Object.values(indexRecord(fleet))) {
+      expect(v === null || ['number', 'string', 'boolean'].includes(typeof v)).toBe(true);
+    }
+  });
+});

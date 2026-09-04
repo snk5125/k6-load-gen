@@ -19,15 +19,33 @@ export function emitIndex(summaryJson: string): string {
  * independent layer — see writeKeyFiles below for how the CLI hands these
  * values to bin/run.sh without ever building executable text from them.
  */
-export function emitKeys(summaryJson: string, prefix: string): Record<string, string> {
+export function emitKeys(
+  summaryJson: string,
+  prefix: string,
+  genIndexOverride?: number,
+): Record<string, string> {
   const s = JSON.parse(summaryJson) as Record<string, unknown>;
   const run = (s.run ?? {}) as Record<string, unknown>;
   const gen = (s.generator ?? {}) as Record<string, unknown>;
 
+  // A summary with a `fleet` block is the merged artifact of a single-task
+  // fleet (src/fleet/merge.ts): gen_index null -> the `fleet` stem. The
+  // override lets bin/run.sh place a generator's run.log using the FLEET
+  // summary's identity when that generator produced no summary of its own —
+  // the crash log is the most useful artifact of a partial failure.
+  const genIndex =
+    genIndexOverride !== undefined
+      ? genIndexOverride
+      : s.fleet !== undefined && s.fleet !== null
+        ? null
+        : typeof gen.gen_index === 'number'
+          ? gen.gen_index
+          : 0;
+
   const keys = artifactKeys(
     {
       run_id: String(run.run_id),
-      gen_index: typeof gen.gen_index === 'number' ? gen.gen_index : 0,
+      gen_index: genIndex,
       started_at: String(run.started_at),
     },
     prefix,
@@ -87,7 +105,8 @@ export function emitTimelineFlag(profileJson: string): string {
 // Node entrypoint. Guarded so importing this module in a test does not read
 // stdin.
 //   index-cli.ts index < summary.json                      -> flat JSON line on stdout
-//   index-cli.ts keys <prefix> <output-dir> < summary.json -> writes key files
+//   index-cli.ts keys <prefix> <output-dir> [gen_index] < summary.json -> writes key files
+//     (gen_index overrides the summary's own generator identity — see emitKeys)
 //   index-cli.ts emit-timeline <profile.json>              -> prints 1 or 0
 if (typeof process !== 'undefined' && process.argv[1] && process.argv[1].includes('index-cli')) {
   const mode = process.argv[2];
@@ -113,6 +132,7 @@ if (typeof process !== 'undefined' && process.argv[1] && process.argv[1].include
   } else {
     const prefix = process.argv[3] ?? '';
     const outDir = process.argv[4];
+    const genArg = process.argv[5];
     let raw = '';
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (c) => {
@@ -124,7 +144,14 @@ if (typeof process !== 'undefined' && process.argv[1] && process.argv[1].include
           if (!outDir) {
             throw new Error('keys mode requires an output directory argument');
           }
-          writeKeyFiles(outDir, emitKeys(raw, prefix));
+          let override: number | undefined;
+          if (genArg !== undefined) {
+            override = Number(genArg);
+            if (!Number.isInteger(override) || override < 0) {
+              throw new Error(`gen_index argument must be a non-negative integer (got ${genArg})`);
+            }
+          }
+          writeKeyFiles(outDir, emitKeys(raw, prefix, override));
         } else {
           process.stdout.write(emitIndex(raw));
         }

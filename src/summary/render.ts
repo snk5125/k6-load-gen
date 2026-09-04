@@ -1,7 +1,42 @@
 import type { RunSummary } from './build.ts';
 
-const n = (v: number | undefined, digits = 1): string =>
+export const n = (v: number | undefined, digits = 1): string =>
   v === undefined ? '-' : v.toFixed(digits);
+
+// The four trailing sections are shared with the fleet report
+// (src/fleet/render.ts), which has a different header and a per-generator
+// table but must read identically from the per-type breakdown down.
+
+export function renderTypeBreakdown(types: RunSummary['types']): string[] {
+  if (Object.keys(types).length === 0) return [];
+  const lines = ['', 'PER-TYPE BREAKDOWN:'];
+  for (const type of Object.keys(types).sort()) {
+    const t = types[type];
+    const dur = t.send_duration;
+    lines.push(
+      `  ${type}: attempted=${t.events_attempted ?? 'null'} sent=${t.events_sent ?? 'null'} ` +
+        `failure_rate=${t.send_failures === null ? 'null' : n(t.send_failures * 100, 3) + '%'} ` +
+        `p99=${dur === null ? 'null' : n(dur['p(99)'])}ms`,
+    );
+  }
+  return lines;
+}
+
+export function renderFailedThresholds(slo: RunSummary['thresholds']['slo']): string[] {
+  const failed = slo.filter((t) => !t.ok);
+  if (failed.length === 0) return [];
+  return ['', 'FAILED THRESHOLDS (SLO):', ...failed.map((t) => `  - ${t.metric} ${t.expression}`)];
+}
+
+export function renderWarnings(warnings: string[]): string[] {
+  if (warnings.length === 0) return [];
+  return ['', 'WARNINGS:', ...warnings.map((w) => `  - ${w}`)];
+}
+
+export function renderInvalidity(validity: RunSummary['validity']): string[] {
+  if (validity.valid) return [];
+  return ['', 'RUN IS NOT VALID:', ...validity.reasons.map((r) => `  - ${r}`)];
+}
 
 export function renderSummary(s: RunSummary): string {
   const d = s.metrics.send_duration ?? {};
@@ -28,35 +63,12 @@ export function renderSummary(s: RunSummary): string {
     lines.push(`structural thresholds : ${s.thresholds.structural_count} (plumbing; never fail — see docs)`);
   }
 
-  if (Object.keys(s.types).length > 0) {
-    lines.push('', 'PER-TYPE BREAKDOWN:');
-    for (const type of Object.keys(s.types).sort()) {
-      const t = s.types[type];
-      const dur = t.send_duration;
-      lines.push(
-        `  ${type}: attempted=${t.events_attempted ?? 'null'} sent=${t.events_sent ?? 'null'} ` +
-          `failure_rate=${t.send_failures === null ? 'null' : n(t.send_failures * 100, 3) + '%'} ` +
-          `p99=${dur === null ? 'null' : n(dur['p(99)'])}ms`,
-      );
-    }
-  }
-
-  const failed = s.thresholds.slo.filter((t) => !t.ok);
-  if (failed.length > 0) {
-    lines.push('', 'FAILED THRESHOLDS (SLO):');
-    for (const t of failed) lines.push(`  - ${t.metric} ${t.expression}`);
-  }
-
-  if (s.warnings.length > 0) {
-    lines.push('', 'WARNINGS:');
-    for (const w of s.warnings) lines.push(`  - ${w}`);
-  }
-
-  if (!s.validity.valid) {
-    lines.push('', 'RUN IS NOT VALID:');
-    for (const r of s.validity.reasons) lines.push(`  - ${r}`);
-  }
-
-  lines.push('');
+  lines.push(
+    ...renderTypeBreakdown(s.types),
+    ...renderFailedThresholds(s.thresholds.slo),
+    ...renderWarnings(s.warnings),
+    ...renderInvalidity(s.validity),
+    '',
+  );
   return lines.join('\n');
 }

@@ -109,3 +109,26 @@ describe('emitTimelineFlag', () => {
     );
   });
 });
+
+describe('emitKeys — fleet summaries', () => {
+  const fleetSummary = JSON.stringify({
+    ...JSON.parse(summary),
+    generator: { gen_index: null, gen_count: 3 },
+    fleet: { generator_count: 3, generators_reported: 3, generators: [], aggregation: {} },
+  });
+
+  it('derives fleet keys when the summary carries a fleet block', () => {
+    expect(emitKeys(fleetSummary, 'k6')).toEqual({
+      index: 'k6/index/dt=2026-08-29/r1-fleet.json',
+      timeline: 'k6/timeline/dt=2026-08-29/r1-fleet.jsonl',
+      summary: 'k6/runs/r1/fleet/summary.json',
+      run_log: 'k6/runs/r1/fleet/run.log',
+      raw: 'k6/runs/r1/fleet/raw.json.gz',
+    });
+  });
+
+  it('lets the caller override gen_index, so a generator with no summary can still have its log placed', () => {
+    expect(emitKeys(fleetSummary, 'k6', 2).run_log).toBe('k6/runs/r1/gen-2/run.log');
+    expect(emitKeys(summary, 'k6', 5).summary).toBe('k6/runs/r1/gen-5/summary.json');
+  });
+});

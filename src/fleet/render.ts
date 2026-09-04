@@ -1,0 +1,55 @@
+import {
+  n,
+  renderFailedThresholds,
+  renderInvalidity,
+  renderTypeBreakdown,
+  renderWarnings,
+} from '../summary/render.ts';
+import type { FleetSummary } from './merge.ts';
+
+/** The fleet counterpart of renderSummary: same trailing sections, a fleet
+ * header, and a per-generator table so one bad generator is visible. */
+export function renderFleetSummary(s: FleetSummary): string {
+  const d = s.metrics.send_duration ?? {};
+  const durationDisplay = s.run.duration_sec === null ? 'unknown' : `${s.run.duration_sec}s`;
+  const lines: string[] = [
+    '',
+    `=== ${s.run.run_id} — FLEET ${s.fleet.generators_reported}/${s.fleet.generator_count} — ${s.validity.valid ? 'VALID' : 'INVALID'} ===`,
+    `fleet duration    : ${durationDisplay}  (${s.fleet.generator_count} generators in one task)`,
+    `rate requested    : ${s.rate.requested_eps} eps`,
+    `rate achievable   : ${s.rate.achieved_eps} eps  (drift ${n(s.rate.delta_pct)}%)`,
+    `events attempted  : ${s.metrics.events_attempted?.count ?? 0}`,
+    `events sent       : ${s.metrics.events_sent?.count ?? 0}`,
+    `send failure rate : ${n((s.metrics.send_failures?.rate ?? 0) * 100, 3)}%`,
+    `send p50/p95/p99  : ${n(d.med)} / ${n(d['p(95)'])} / ${n(d['p(99)'])} ms  (worst generator)`,
+    `dropped iterations: ${s.validity.dropped_iterations}   <-- MUST be 0`,
+  ];
+
+  if (s.thresholds.structural_count > 0) {
+    lines.push(`structural thresholds : ${s.thresholds.structural_count} (plumbing; never fail — see docs)`);
+  }
+
+  lines.push('', 'PER-GENERATOR:');
+  for (const g of s.fleet.generators) {
+    const exit = `exit=${g.exit_code ?? '?'}`;
+    if (!g.summary_present) {
+      lines.push(`  gen-${g.gen_index} ${exit} no summary INVALID`);
+      continue;
+    }
+    lines.push(
+      `  gen-${g.gen_index} ${exit} sent=${g.events_sent} ` +
+        `failure_rate=${g.send_failure_rate === null ? 'null' : n(g.send_failure_rate * 100, 3) + '%'} ` +
+        `p99=${g.send_duration_p99 === null ? 'null' : n(g.send_duration_p99)}ms ` +
+        `dropped=${g.dropped_iterations} ${g.valid ? 'VALID' : 'INVALID'}`,
+    );
+  }
+
+  lines.push(
+    ...renderTypeBreakdown(s.types),
+    ...renderFailedThresholds(s.thresholds.slo),
+    ...renderWarnings(s.warnings),
+    ...renderInvalidity(s.validity),
+    '',
+  );
+  return lines.join('\n');
+}

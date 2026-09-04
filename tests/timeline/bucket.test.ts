@@ -203,3 +203,21 @@ describe('createBucketer', () => {
     expect(bucketer.finish()).toEqual([]);
   });
 });
+
+describe('bucketSamples — send_samples (fleet merge denominator)', () => {
+  it('reports how many send_failures samples the failure_rate was divided by', () => {
+    const lines = [
+      sample('send_failures', '2026-08-29T10:00:00.000Z', 1),
+      sample('send_failures', '2026-08-29T10:00:01.000Z', 0),
+      sample('send_failures', '2026-08-29T10:00:02.000Z', 0),
+    ];
+    const b = bucketSamples(lines, 15)[0];
+    expect(b.send_samples).toBe(3);
+    expect(b.failure_rate).toBeCloseTo(1 / 3, 5);
+  });
+
+  it('reports 0 send_samples for a bucket with no failure samples', () => {
+    const b = bucketSamples([sample('events_sent', '2026-08-29T10:00:00.000Z', 10)], 15)[0];
+    expect(b.send_samples).toBe(0);
+  });
+});

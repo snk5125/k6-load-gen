@@ -108,6 +108,7 @@ export function createBucketer(bucket_sec: number): Bucketer {
             events_attempted: acc.events_attempted,
             eps: acc.events_sent / bucket_sec,
             send_failures: acc.send_failures,
+            send_samples: acc.failure_samples,
             failure_rate: acc.failure_samples === 0 ? 0 : acc.send_failures / acc.failure_samples,
             send_duration_p50: percentile(sorted, 50),
             send_duration_p95: percentile(sorted, 95),
