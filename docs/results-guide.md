@@ -286,6 +286,27 @@ task, or split across generators, then rerun.
 
 For what to do when a run is invalid, condition by condition, see [run-validity.md](run-validity.md).
 
+## 8a. Correlating a run with the aggregator
+
+`tools/correlate_run.py` (Python 3, no dependencies) joins a run's fleet summary and timeline with
+the aggregator's Vector metrics and, optionally, the aggregator service's CPU from CloudWatch, stage
+by stage, and prints a Markdown report plus JSON written to be handed to an LLM. Run `scrape`
+against the aggregator's `prometheus_exporter` for the duration of the test, then `report` for the
+run id:
+
+```bash
+python3 tools/correlate_run.py scrape --url http://<aggregator>:9598/metrics --interval 15 --out vector-metrics.jsonl
+```
+
+```bash
+python3 tools/correlate_run.py report --results-uri s3://<bucket> --run-id <run_id> --metrics vector-metrics.jsonl --source http_json --records json-app --sink Splunk --cw-cluster <vector-cluster> --cw-service <vector-service> --json report.json
+```
+
+Per stage it shows what the generator delivered (eps, p99, failures, dropped iterations), what the
+named source, record-level and sink components received, sent, errored and how busy they were, and
+the service's CPU average and maximum, then applies the knee rule from §7: the first stage where
+p99 more than doubles against the first stages or failures exceed 0.1%, with the CPU at that point.
+
 ## 9. Glossary
 
 - **generator**: one k6 process with one `gen_index`; a fleet is N of them sharing a `run_id`.
