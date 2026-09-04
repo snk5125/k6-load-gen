@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { injectGenerator, parseS3Uri, generateRunId } from '../../src/fleet/launch.ts';
+import { injectGenerator, parseS3Uri, generateRunId, parseArgs } from '../../src/fleet/launch.ts';
 
 /**
  * Drives src/fleet/launch.ts as a process against a STUB `aws` on PATH —
@@ -143,6 +143,13 @@ describe('fleet-launch helpers', () => {
     const o = { containerOverrides: [{ name: 'k6-load-gen', environment: [{ name: 'PROFILE', value: 'hec' }, { name: 'GEN_COUNT', value: '9' }] }] };
     const env = injectGenerator(o, 2, 4).containerOverrides![0].environment!;
     expect(env).toEqual([{ name: 'PROFILE', value: 'hec' }, { name: 'GEN_INDEX', value: '2' }, { name: 'GEN_COUNT', value: '4' }]);
+  });
+
+  it('accepts --key value and --key=value, including a task definition with a revision or as an ARN', () => {
+    expect(parseArgs(['--task-definition', 'k6-load-gen:12', '--count', '3'])).toEqual({ 'task-definition': 'k6-load-gen:12', count: '3' });
+    expect(parseArgs(['--task-definition=k6-load-gen:12', '--no-merge'])).toEqual({ 'task-definition': 'k6-load-gen:12', 'no-merge': true });
+    expect(parseArgs(['--task-definition=arn:aws:ecs:r:1:task-definition/k6-load-gen:12'])['task-definition']).toBe('arn:aws:ecs:r:1:task-definition/k6-load-gen:12');
+    expect(() => parseArgs(['--count'])).toThrow(/needs a value/);
   });
 
   it('generates a run id that passes the key allowlist', () => {

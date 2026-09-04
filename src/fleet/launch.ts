@@ -308,6 +308,14 @@ export function parseArgs(argv: string[]): Record<string, string | boolean> {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith('--')) throw new Error(`unexpected argument ${JSON.stringify(a)}`);
+    // Both `--key value` and `--key=value` are accepted; the aws CLI takes
+    // both, and a task-definition with a revision (`family:12`) or an ARN
+    // is a value operators reasonably write either way.
+    const eq = a.indexOf('=');
+    if (eq > 2) {
+      out[a.slice(2, eq)] = a.slice(eq + 1);
+      continue;
+    }
     const key = a.slice(2);
     if (key === 'no-merge' || key === 'help') {
       out[key] = true;
