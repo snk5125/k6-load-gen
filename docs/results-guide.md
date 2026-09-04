@@ -283,6 +283,8 @@ describe the configured load. Look at `runs/<run_id>/gen-1/run.log` for the refu
 Reading: void. Raise `pre_allocated_vus` / `max_vus` in the profile, lower the rate, use a bigger
 task, or split across generators, then rerun.
 
+For what to do when a run is invalid, condition by condition, see [run-validity.md](run-validity.md).
+
 ## 9. Glossary
 
 - **generator**: one k6 process with one `gen_index`; a fleet is N of them sharing a `run_id`.
