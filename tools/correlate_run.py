@@ -503,10 +503,16 @@ def assign_buckets(buckets, stages, ref_epoch, uncertainty_sec=0.0):
 
     Returns a list of {"bucket", "stage", "boundary"} in the input order.
     """
+    # Only INTERNAL boundaries (where one stage hands over to the next) plus
+    # the schedule's end can split a bucket between two stages. The run's own
+    # start is not an edge: nothing precedes stage 0, so a bucket that begins
+    # there is not shared with anything, and flagging it would mark the first
+    # bucket of every run as boundary whenever uncertainty_sec > 0.
     edges = []
-    for st in stages:
+    for st in stages[1:]:
         edges.append(st["offset_start"])
-        edges.append(st["offset_end"])
+    if stages:
+        edges.append(stages[-1]["offset_end"])
     out = []
     for b in buckets:
         start = parse_instant(b.get("bucket_start"))

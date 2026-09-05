@@ -681,3 +681,21 @@ class AlignmentLinesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FirstBucketIsNotABoundary(unittest.TestCase):
+    def test_run_start_is_not_an_edge_even_with_uncertainty(self):
+        from correlate_run import assign_buckets
+        stages = [
+            {"index": 0, "offset_start": 0.0, "offset_end": 60.0},
+            {"index": 1, "offset_start": 60.0, "offset_end": 120.0},
+        ]
+        buckets = [
+            {"bucket_start": "2026-09-05T10:00:00.000Z", "bucket_sec": 15},   # starts exactly at the run start
+            {"bucket_start": "2026-09-05T10:00:45.000Z", "bucket_sec": 15},   # ends exactly on the 60 s hand-over
+            {"bucket_start": "2026-09-05T10:00:50.000Z", "bucket_sec": 15},   # straddles the hand-over
+        ]
+        out = assign_buckets(buckets, stages, 1788602400.0, uncertainty_sec=5.0)
+        self.assertEqual(out[0]["stage"], 0)
+        self.assertFalse(out[0]["boundary"])
+        self.assertTrue(out[2]["boundary"])
