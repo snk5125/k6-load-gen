@@ -261,6 +261,37 @@ describe('buildSummary per-type breakdown', () => {
     expect(s.types.auditd.wire_bytes).toBeNull();
   });
 
+  it('carries the per-type events_rejected count from the tagged sub-metric', () => {
+    // OTLP partial success: the receiver answered 200 but refused some
+    // records (src/transports/otlp-partial.ts). Those events must be
+    // visible per type, not folded into events_sent.
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: {
+        'events_attempted{scenario:auditd}': { values: { count: 100 } },
+        'events_sent{scenario:auditd}': { values: { count: 93 } },
+        'events_rejected{scenario:auditd}': { values: { count: 7 } },
+      },
+    });
+    expect(s.types.auditd.events_rejected).toBe(7);
+  });
+
+  it('reports a real zero events_rejected, and null when the sub-metric never arrived', () => {
+    // Zero is a MEASUREMENT (the receiver refused nothing); null means the
+    // type did not run this invocation. Conflating them would make a clean
+    // run indistinguishable from an unmeasured one.
+    const zero = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: { 'events_rejected{scenario:auditd}': { values: { count: 0 } } },
+    });
+    expect(zero.types.auditd.events_rejected).toBe(0);
+
+    const absent = buildSummary({ ...base, active_types: ['auditd'], metrics: {} });
+    expect(absent.types.auditd.events_rejected).toBeNull();
+  });
+
   it('still reports a genuine non-zero wire_bytes count when the transport actually measured it', () => {
     const s = buildSummary({
       ...base,

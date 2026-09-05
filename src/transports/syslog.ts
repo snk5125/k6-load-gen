@@ -124,17 +124,41 @@ export const createSyslogTransport: TransportFactory = (cfg) => {
         try {
           await s.connect({ port, host, tls });
         } catch (err) {
-          return { ok: false, status: 'connect-failed', wire_bytes: null, error: formatSocketError(err) };
+          return {
+            ok: false,
+            status: 'connect-failed',
+            wire_bytes: null,
+            accepted: null,
+            rejected: null,
+            error: formatSocketError(err),
+          };
         }
 
         await s.write(payload);
         if (socketError) {
-          return { ok: false, status: 'socket-error', wire_bytes: null, error: socketError };
+          return {
+            ok: false,
+            status: 'socket-error',
+            wire_bytes: null,
+            accepted: null,
+            rejected: null,
+            error: socketError,
+          };
         }
         // Consistent with null.ts/otlp-http.ts/hec.ts: wire_bytes is the
         // formatted string's .length, a metric, not the protocol-correctness
         // byte count that frame() computes internally for octet-counting.
-        return { ok: true, status: 'written', wire_bytes: payload.length };
+        // Syslog over TCP has no acknowledgement at all, let alone a
+        // partial one: a completed write is the only signal there is, so
+        // the batch counts as fully accepted (unlike OTLP — see
+        // otlp-partial.ts).
+        return {
+          ok: true,
+          status: 'written',
+          wire_bytes: payload.length,
+          accepted: events.length,
+          rejected: 0,
+        };
       } catch (err) {
         // write() rejecting, or the payload-build throw noted above — both
         // land here, separate from the 'error'-event path handled above.
@@ -142,7 +166,14 @@ export const createSyslogTransport: TransportFactory = (cfg) => {
         // is TCPError-shaped per the source reading above) — reused here
         // too so nothing on this path regresses to "[object Object]" if a
         // future xk6-tcp version ever rejects write() with a TCPError.
-        return { ok: false, status: 'exception', wire_bytes: null, error: formatSocketError(err) };
+        return {
+          ok: false,
+          status: 'exception',
+          wire_bytes: null,
+          accepted: null,
+          rejected: null,
+          error: formatSocketError(err),
+        };
       } finally {
         // MUST run on every path, including the two early returns above:
         // a Socket left undestroyed hangs the whole k6 process (see the

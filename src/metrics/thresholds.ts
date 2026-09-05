@@ -44,6 +44,7 @@ export const VALIDITY_THRESHOLDS: Record<string, string[]> = {
 export const STRUCTURAL_EXPRESSIONS: Record<string, string> = {
   events_attempted: 'count>=0',
   events_sent: 'count>=0',
+  events_rejected: 'count>=0',
   wire_bytes: 'count>=0',
   send_errors: 'count>=0',
   send_failures: 'rate>=0',

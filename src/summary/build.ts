@@ -47,7 +47,7 @@ export function formatSubMetricKey(metric: string, type: string): string {
 
 /**
  * Per-type breakdown, one field per STRUCTURAL_EXPRESSIONS metric (the same
- * six metrics whose tagged sub-metric a structural threshold forces into
+ * metrics whose tagged sub-metric a structural threshold forces into
  * `handleSummary` in the first place — see src/metrics/thresholds.ts).
  *
  * `null` means "not measured": no `{scenario:<type>}` sub-metric reached
@@ -64,6 +64,19 @@ export interface TypeSummary {
   send_duration: Record<string, number> | null;
   wire_bytes: number | null;
   send_errors: number | null;
+  /**
+   * Events the target refused after accepting the request — OTLP partial
+   * success only (see src/transports/otlp-partial.ts). `0` is a real
+   * measurement ("the receiver refused nothing"); `null` is "not measured",
+   * exactly as for the fields above.
+   *
+   * OPTIONAL only because src/fleet/merge.ts does not sum it yet: a merged
+   * FleetSummary reuses this interface, and a required field would make
+   * every existing merge site a type error before that summing lands. Make
+   * it required once fleet merge carries it — `buildTypeSummary` below
+   * always populates it, so a single-generator summary never omits it.
+   */
+  events_rejected?: number | null;
 }
 
 export interface RunSummary {
@@ -90,8 +103,8 @@ export interface RunSummary {
    */
   rate: { requested_eps: number; achieved_eps: number; delta_pct: number };
   metrics: Record<string, Record<string, number>>;
-  /** Per active type, the same six metrics broken out from their tagged
-   * sub-metrics. Empty when no active_types were supplied. */
+  /** Per active type, the same STRUCTURAL_EXPRESSIONS metrics broken out
+   * from their tagged sub-metrics. Empty when no active_types were supplied. */
   types: Record<string, TypeSummary>;
   thresholds: {
     /** Real SLO/validity verdicts — never includes the never-failing
@@ -147,6 +160,7 @@ interface K6Metric {
 const SCALAR_FIELD: Partial<Record<string, 'count' | 'rate'>> = {
   events_attempted: 'count',
   events_sent: 'count',
+  events_rejected: 'count',
   wire_bytes: 'count',
   send_errors: 'count',
   send_failures: 'rate',

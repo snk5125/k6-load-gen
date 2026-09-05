@@ -609,7 +609,8 @@ A run is invalid when `dropped_iterations > 0` or `events_attempted === 0` (no e
 Each entry is keyed by type name. Each field is a number or `null` (null means the sub-metric was not produced for this type in this run — for example, a run with `TYPES=auditd` has no `cloudtrail` sub-metrics at all):
 
 - `events_attempted` — total events batched for sending
-- `events_sent` — total events successfully delivered
+- `events_sent` — total events the target ACCEPTED
+- `events_rejected` — total events the target took the request for and then refused (OTLP partial success only; see [OTLP Partial Success](#otlp-partial-success) below)
 - `send_failures` — count of failed batch sends
 - `send_errors` — count of error-classified failures
 - `wire_bytes` — bytes sent (transport-dependent; see [wire_bytes Notes](#wire_bytes-notes) below)
@@ -650,6 +651,46 @@ All `wire_bytes` measurements use JavaScript string length (UTF-16 code units), 
 
 When `wire_bytes` is `null` for a type in `summary.json`, it means the transport never produced a measurable byte count for that type (e.g., `otlp-grpc` always produces `null`), not that zero bytes were sent.
 
+### OTLP Partial Success
+
+An OTLP receiver is allowed to accept your request and still refuse part of it. It answers
+`200` (or gRPC `StatusOK`) and puts a `partial_success` block in the response naming how many
+log records it dropped and why — an index that is full, a cardinality limit, records too old.
+
+The generator reads that block. Records it names are counted in `events_rejected`, never in
+`events_sent`, and the batch counts as a **failed send** (it raises `send_failures` and
+`send_errors`, exactly like a network error would). Nothing is retried: a load test measures
+what the target did with the offered load, and re-sending would change the offered rate.
+
+What you will see in a run against a receiver that is dropping records:
+
+```
+events attempted  : 200
+events sent       : 160
+events rejected   : 40
+send failure rate : 100.000%
+```
+
+plus a bounded console line per failure naming the receiver's own message:
+
+```
+send failed #1 seq=0 status=200 error=OTLP partial success: 2 of 10 log records rejected — index full
+```
+
+Three related cases:
+
+- **Advisory.** A `partial_success` that rejects **zero** records but still carries a message
+  is a warning about the request, not a rejection. Everything is counted as sent and the run
+  logs `send advisory #N (batch accepted in full)`. It never fails a threshold.
+- **Malformed.** A receiver claiming more rejections than the batch held, or a count that is
+  not a non-negative integer, is treated as a whole-batch failure — neither `events_sent` nor
+  `events_rejected` is credited, and the error begins `malformed OTLP response`. Refusing to
+  attribute a number is deliberate: a wrong count is worse than no count.
+- **Other transports.** `hec`, `syslog` and `null` have no partial-acknowledgement shape, so
+  their `events_rejected` is always 0 and their acknowledged batches are always whole.
+
+To gate a run on this, add `"events_rejected": "count<1"` to your profile's `thresholds`.
+
 ### Thresholds
 
 Use these metric names in `profile.thresholds`:
@@ -657,7 +698,8 @@ Use these metric names in `profile.thresholds`:
 | Metric | Type | Example expression | Notes |
 |---|---|---|---|
 | `events_attempted` | Counter | `count>0` | Validity check |
-| `events_sent` | Counter | `count>0` | Successful delivery |
+| `events_sent` | Counter | `count>0` | Events the target accepted |
+| `events_rejected` | Counter | `count<1` | Events an OTLP receiver refused on a 200 |
 | `send_failures` | Rate | `rate<0.001` | Fraction of failed batches |
 | `send_errors` | Counter | `count<10` | Absolute error count |
 | `send_duration` | Trend | `p(99)<250` | Batch send latency in ms |

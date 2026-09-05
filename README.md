@@ -137,6 +137,11 @@ validity block. With `EMIT_TIMELINE`, also `timeline.jsonl` (15s rollups, one JS
 `validity.valid` answers *"is this measurement trustworthy?"* — separate from *"did the target
 pass?"*. A run that drops iterations measured the generator, not the target.
 
+`events_sent` counts what the target **accepted**, not what was handed to it. An OTLP receiver can
+answer `200` and still refuse part of a batch (`partial_success`); those records land in
+`events_rejected` and the batch counts as a failed send. See
+[OTLP Partial Success](docs/user-guide.md#otlp-partial-success).
+
 | Exit code | Meaning |
 |---|---|
 | `0` | Pass |

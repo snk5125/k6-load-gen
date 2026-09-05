@@ -13,8 +13,15 @@ export function renderTypeBreakdown(types: RunSummary['types']): string[] {
   for (const type of Object.keys(types).sort()) {
     const t = types[type];
     const dur = t.send_duration;
+    // `rejected=` appears ONLY when a receiver actually refused something.
+    // Zero is the overwhelmingly common case and a `rejected=0` on every
+    // line would be noise; a merged fleet summary does not carry the field
+    // at all yet (see TypeSummary.events_rejected), and printing `null`
+    // there would read as a defect rather than as "not summed".
+    const rejected = t.events_rejected;
     lines.push(
       `  ${type}: attempted=${t.events_attempted ?? 'null'} sent=${t.events_sent ?? 'null'} ` +
+        (typeof rejected === 'number' && rejected > 0 ? `rejected=${rejected} ` : '') +
         `failure_rate=${t.send_failures === null ? 'null' : n(t.send_failures * 100, 3) + '%'} ` +
         `p99=${dur === null ? 'null' : n(dur['p(99)'])}ms`,
     );
@@ -49,6 +56,11 @@ export function renderSummary(s: RunSummary): string {
     `rate achievable   : ${s.rate.achieved_eps} eps  (drift ${n(s.rate.delta_pct)}%)`,
     `events attempted  : ${s.metrics.events_attempted?.count ?? 0}`,
     `events sent       : ${s.metrics.events_sent?.count ?? 0}`,
+    // Always shown, even at 0: an OTLP receiver can refuse records on a 200
+    // (see src/transports/otlp-partial.ts), so a reader comparing
+    // "attempted" with "sent" needs to see, without hunting, whether the
+    // difference was refused or simply never sent.
+    `events rejected   : ${s.metrics.events_rejected?.count ?? 0}`,
     `send failure rate : ${n((s.metrics.send_failures?.rate ?? 0) * 100, 3)}%`,
     `send p50/p95/p99  : ${n(d.med)} / ${n(d['p(95)'])} / ${n(d['p(99)'])} ms`,
     `dropped iterations: ${s.validity.dropped_iterations}   <-- MUST be 0`,

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { buildThresholds, isStructuralThreshold, validityThresholdConflicts } from '../../src/metrics/thresholds.ts';
+import {
+  buildThresholds,
+  isStructuralThreshold,
+  validityThresholdConflicts,
+  STRUCTURAL_EXPRESSIONS,
+} from '../../src/metrics/thresholds.ts';
 
 describe('buildThresholds', () => {
   it('always applies the dropped_iterations validity threshold', () => {
@@ -56,9 +61,20 @@ describe('buildThresholds', () => {
     expect(t['send_duration{scenario:auditd}']).toEqual(['max>=0']);
   });
 
-  it('generates six structural thresholds per type', () => {
+  it('generates one structural threshold per STRUCTURAL_EXPRESSIONS metric per type', () => {
     const t = buildThresholds({ abort_on_fail: false, active_types: ['auditd', 'cloudtrail'] });
-    expect(Object.keys(t).filter(isStructuralThreshold)).toHaveLength(12);
+    const perType = Object.keys(STRUCTURAL_EXPRESSIONS).length;
+    expect(perType).toBe(7);
+    expect(Object.keys(t).filter(isStructuralThreshold)).toHaveLength(perType * 2);
+  });
+
+  it('carries events_rejected so its per-type sub-metric reaches handleSummary', () => {
+    // Without a declared threshold k6 never emits the tagged sub-metric, so
+    // a per-type events_rejected would be permanently null in summary.json
+    // no matter how many records the receiver refused (see the
+    // STRUCTURAL_EXPRESSIONS doc comment).
+    const t = buildThresholds({ abort_on_fail: false, active_types: ['auditd'] });
+    expect(t['events_rejected{scenario:auditd}']).toEqual(['count>=0']);
   });
 
   it('classifies a generated threshold as structural and a profile one as not', () => {

@@ -1,6 +1,7 @@
 import grpc from 'k6/net/grpc';
 import type { SendResult, TransportFactory } from './types.ts';
 import { buildResourceLogs } from './otlp-payload.ts';
+import { classifyOtlpPartialSuccess } from './otlp-partial.ts';
 
 const PROTO_ROOT = __ENV.PROTO_ROOT || '/protos';
 const EXPORT_METHOD = 'opentelemetry.proto.collector.logs.v1.LogsService/Export';
@@ -51,21 +52,60 @@ export const createOtlpGrpcTransport: TransportFactory = (cfg) => {
 
     async send(events, _ctx): Promise<SendResult> {
       if (connectFailed) {
-        return { ok: false, status: 'connect-failed', wire_bytes: null, error: connectError };
+        return {
+          ok: false,
+          status: 'connect-failed',
+          wire_bytes: null,
+          accepted: null,
+          rejected: null,
+          error: connectError,
+        };
       }
       try {
         const payload = buildResourceLogs(events, resourceAttributes);
         const res = client.invoke(EXPORT_METHOD, payload, { timeout });
         if (res && res.status === grpc.StatusOK) {
+          // StatusOK is NOT proof the batch arrived whole: OTLP carries a
+          // `partial_success` inside the decoded ExportLogsServiceResponse
+          // (res.message) when the receiver refused some of the records,
+          // and it comes back on an OK status. Reading only the status
+          // published a clean run against a collector dropping half of
+          // every batch — see src/transports/otlp-partial.ts.
+          const c = classifyOtlpPartialSuccess(res.message, events.length);
+          if (!c.ok) {
+            // A rejection is not a broken connection: the RPC completed.
+            // Do NOT closeClient() here — that is reserved for transport
+            // failures, and tearing down a healthy connection on every
+            // partially-rejected batch would turn a receiver-side limit
+            // into a reconnect storm.
+            return {
+              ok: false,
+              status: res.status,
+              // k6 does not expose the encoded protobuf size (see below).
+              wire_bytes: null,
+              accepted: c.accepted,
+              rejected: c.rejected,
+              error: c.error,
+            };
+          }
           // k6 does not expose the encoded protobuf size; reporting a
           // JSON-side length here would be a wrong number, not an approximate one.
-          return { ok: true, status: res.status, wire_bytes: null };
+          return {
+            ok: true,
+            status: res.status,
+            wire_bytes: null,
+            accepted: c.accepted,
+            rejected: c.rejected,
+            advisory: c.advisory,
+          };
         }
         closeClient();
         return {
           ok: false,
           status: res ? res.status : 'no-response',
           wire_bytes: null,
+          accepted: null,
+          rejected: null,
           // Response.error is an object (the error protobuf serialized to
           // JSON), not a string — String() on it collapses every failure to
           // the useless literal "[object Object]". JSON.stringify preserves
@@ -74,7 +114,14 @@ export const createOtlpGrpcTransport: TransportFactory = (cfg) => {
         };
       } catch (err) {
         closeClient();
-        return { ok: false, status: 'exception', wire_bytes: null, error: String(err) };
+        return {
+          ok: false,
+          status: 'exception',
+          wire_bytes: null,
+          accepted: null,
+          rejected: null,
+          error: String(err),
+        };
       }
     },
 
