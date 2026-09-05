@@ -707,7 +707,10 @@ sets `START_AT`, the launcher leaves it alone and injects nothing further; `--no
 the whole feature off (no `START_AT` is injected unless the file supplies one). `START_AT` also
 accepts a bare Unix epoch in seconds, for callers that construct it themselves. A generator that
 starts after its `START_AT` (a slow placement, or a value already in the past) logs the lateness to
-stderr and proceeds immediately rather than waiting or failing. `fleet.start_skew_sec` in the merged
+stderr and proceeds immediately rather than waiting or failing. The wait is bounded: a `START_AT`
+more than `START_AT_MAX_WAIT_SEC` seconds ahead (default 3600) is refused with a log line and the
+generator starts immediately, and an epoch given in milliseconds is recognised and converted, so a
+unit mistake cannot park a task for hours. `fleet.start_skew_sec` in the merged
 summary reports what that cost: how far apart the reporting generators actually began, in seconds
 (`max(started_at) - min(started_at)`), with a warning when it reaches the timeline bucket width. The
 instant they were told to start is published as `run.start_at`, and `tools/correlate_run.py` aligns
