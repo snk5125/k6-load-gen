@@ -459,7 +459,9 @@ export function main(argv: string[]): number {
   } else if (fileStartAt !== undefined) {
     log(`START_AT ${fileStartAt} already set in the overrides file; leaving it`);
   } else {
-    a.startAt = new Date(Date.now() + startLeadSec * 1000).toISOString();
+    // Whole seconds: the wrapper's BSD-date fallback (macOS test runs) parses
+    // %Y-%m-%dT%H:%M:%SZ only, while GNU date in the image accepts either.
+    a.startAt = new Date(Date.now() + startLeadSec * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
     log(`START_AT ${a.startAt} (--start-lead ${startLeadSec}s)`);
   }
 
