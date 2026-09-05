@@ -76,6 +76,36 @@ Base: `${BASE_IMAGE}` (default `registry.access.redhat.com/ubi9/nodejs-22:latest
 
 Base: `${BASE_IMAGE}`. Installs the AWS CLI v2 from the official AWS bundle (architecture auto-detected via `uname -m`; supports `x86_64` and `aarch64`). Copies the compiled artifacts. Sets environment defaults and switches to non-root user (uid 1001).
 
+### Images from the GitLab pipeline
+
+`.gitlab-ci.yml` builds both images on the project's GitLab mirror and publishes them to its
+Container Registry, so a checkout never needs a local build:
+
+| Image | Tag on the default branch | Tag on a git tag |
+|---|---|---|
+| generator, `$CI_REGISTRY_IMAGE` | `<short-sha>` and `latest` | `<tag>` and `latest` |
+| launcher, `$CI_REGISTRY_IMAGE/launcher` | `<short-sha>` and `latest` | `<tag>` and `latest` |
+
+Only a change that reaches an image triggers it: `Dockerfile`, `.dockerignore`, `src/`, `bin/`,
+`profiles/`, `protos/`, `package.json`, `package-lock.json`, `tsconfig.json`, the `ci/` scripts and
+the pipeline file itself. A merge touching only `docs/`, `tools/`, `tests/`, `aggregator-configs/`
+or the GitHub workflow builds nothing. Merge requests build and smoke-test without publishing
+(`ci/smoke-images.sh` runs the generator's null-transport profile end to end and exercises the
+launcher); the default branch and tags publish.
+
+Hardened bases are CI/CD variables, never committed: set `BASE_IMAGE` and `LAUNCHER_BASE_IMAGE`
+on the GitLab project and `ci/build-images.sh` passes them as build arguments.
+
+ECS pulling from the GitLab registry needs a deploy token with `read_registry`, stored in Secrets
+Manager as `{"username":"<token name>","password":"<token>"}`, and on the container definition:
+
+```json
+"repositoryCredentials": { "credentialsParameter": "arn:aws:secretsmanager:<region>:<account>:secret:<name>" }
+```
+
+with `secretsmanager:GetSecretValue` on that secret granted to the task execution role. The image
+reference is then `registry.gitlab.com/<group>/<project>:<tag>` (or your instance's registry host).
+
 ### Runtime Image Contents
 
 | Path | Description |

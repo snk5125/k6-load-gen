@@ -7,3 +7,7 @@ tests
 .claude
 *.log
 summary.json
+tools
+aggregator-configs
+.github
+ci
