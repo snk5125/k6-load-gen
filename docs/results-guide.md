@@ -307,6 +307,13 @@ named source, record-level and sink components received, sent, errored and how b
 the service's CPU average and maximum, then applies the knee rule from §7: the first stage where
 p99 more than doubles against the first stages or failures exceed 0.1%, with the CPU at that point.
 
+Aggregator counts are the sum of positive increments across the consecutive scrapes covering each
+stage rather than a plain endpoint subtraction, so a Vector counter reset (process restart mid-run)
+is counted from its post-reset value instead of going negative, and a component that briefly
+vanishes from a scrape contributes an unknown — not zero — increment for that gap. Both are flagged
+per stage as `quality` (`reset` / `gaps`) in the JSON and as a "stage N quality" note in the
+Markdown.
+
 ## 9. Glossary
 
 - **generator**: one k6 process with one `gen_index`; a fleet is N of them sharing a `run_id`.

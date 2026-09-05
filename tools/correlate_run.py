@@ -75,7 +75,10 @@ KEEP = {
 
 
 def parse_prom(text):
-    """-> {component_id: {field: value}} summed over every label but component_id."""
+    """-> {component_id: {host: {field: value}}}, summed over every label but
+    component_id and host. `host` is the `host` label when scrapes carry one
+    (e.g. multiple Vector instances behind the same component_id); otherwise
+    it is "" so single-host deployments behave exactly as before."""
     out = {}
     for line in text.splitlines():
         if not line or line.startswith("#"):
@@ -85,12 +88,14 @@ def parse_prom(text):
             continue
         labels = dict(LABEL_RE.findall(m.group("labels") or ""))
         comp = labels.get("component_id", "_")
+        host = labels.get("host", "")
         try:
             v = float(m.group("value"))
         except ValueError:
             continue
-        out.setdefault(comp, {})
-        out[comp][KEEP[m.group("name")]] = out[comp].get(KEEP[m.group("name")], 0.0) + v
+        field = KEEP[m.group("name")]
+        out.setdefault(comp, {}).setdefault(host, {})
+        out[comp][host][field] = out[comp][host].get(field, 0.0) + v
     return out
 
 
@@ -155,29 +160,107 @@ def load_scrapes(path):
     return rows
 
 
-def nearest(rows, ts):
-    """The scrape closest to ts, or None if none within 60 s."""
-    best = None
-    for r in rows:
-        d = abs(r["ts"] - ts)
-        if best is None or d < best[0]:
-            best = (d, r)
-    return best[1] if best and best[0] <= 60 else None
-
-
 COUNTERS = ("received", "sent", "errors", "discarded", "handler_count", "handler_seconds_sum")
 
 
+def select_scrape_window(rows, t0, t1):
+    """Scrapes to use for a [t0, t1] stage: every row with a timestamp in the
+    closed interval, plus the scrape immediately before t0 as the baseline
+    for differencing (rows must be sorted by ts).
+
+    Returns (sequence, within): `sequence` includes the baseline (if any),
+    `within` is just the in-window rows — a component_delta with no rows in
+    `within` has nothing to report for this stage regardless of comp."""
+    within = [r for r in rows if t0 <= r["ts"] <= t1]
+    before = [r for r in rows if r["ts"] < t0]
+    baseline = before[-1] if before else None
+    sequence = ([baseline] if baseline is not None else []) + within
+    return sequence, within
+
+
+def _series_increment(values):
+    """values: a series' value at each scrape in chronological order (None
+    where the scrape has no data for it, including comp/host absent).
+
+    Endpoint subtraction is wrong whenever a Vector process restarts mid-run
+    (a Counter's Prometheus exposition resets to 0/near-0) or a component is
+    briefly absent from a scrape — both make the "delta" go negative or
+    overcount. Instead: sum the positive increment between each
+    consecutive pair of scrapes that both have the series. A decrease is a
+    reset — count only the post-reset value itself as that step's increment
+    (never negative). A scrape where the series disappeared after being
+    present contributes an unknown (not zero) increment for that step: it is
+    counted as a gap, and resumption afterward starts a fresh baseline with
+    no retroactive credit for whatever happened during the gap.
+
+    Returns (increment, reset, gaps, had_data)."""
+    increment = 0.0
+    reset = False
+    gaps = 0
+    had_data = False
+    last = None
+    for v in values:
+        if v is None:
+            if last is not None:
+                gaps += 1
+            last = None
+            continue
+        had_data = True
+        if last is not None:
+            if v < last:
+                increment += v
+                reset = True
+            else:
+                increment += v - last
+        last = v
+    return increment, reset, gaps, had_data
+
+
+def _sum_gauge(host_map, field):
+    """Latest-snapshot gauge fields (utilization, buffer sizes) are not
+    differenced — just summed across hosts, as parse_prom used to sum them
+    across all labels before host-keying existed."""
+    vals = [h[field] for h in host_map.values() if field in h]
+    return sum(vals) if vals else None
+
+
 def component_delta(rows, comp, t0, t1):
-    a, b = nearest(rows, t0), nearest(rows, t1)
-    if not a or not b or a is b:
+    """Sum of positive increments for `comp` over [t0, t1] (see
+    _series_increment), differenced per (component_id, host) series before
+    being summed across hosts so one host's counter reset cannot mask
+    another host's real growth. None when no scrape falls in [t0, t1] at
+    all; a component simply absent from those scrapes still gets a result
+    with None fields (nothing to report, but the window was scraped)."""
+    sequence, within = select_scrape_window(rows, t0, t1)
+    if not within:
         return None
-    ca, cb = a["components"].get(comp, {}), b["components"].get(comp, {})
-    d = {k: cb.get(k, 0.0) - ca.get(k, 0.0) for k in COUNTERS if k in cb or k in ca}
-    d["utilization"] = cb.get("utilization")
-    d["buffer_events"] = cb.get("buffer_events")
-    d["buffer_bytes"] = cb.get("buffer_bytes")
-    d["window_sec"] = b["ts"] - a["ts"]
+    hosts = set()
+    for r in sequence:
+        hosts.update(r.get("components", {}).get(comp, {}).keys())
+    if not hosts:
+        hosts = {""}
+    sums = {f: 0.0 for f in COUNTERS}
+    present = {f: False for f in COUNTERS}
+    reset = False
+    gaps = 0
+    for host in hosts:
+        for f in COUNTERS:
+            values = [r.get("components", {}).get(comp, {}).get(host, {}).get(f) for r in sequence]
+            inc, f_reset, f_gaps, had = _series_increment(values)
+            if had:
+                sums[f] += inc
+                present[f] = True
+            reset = reset or f_reset
+            gaps += f_gaps
+    d = {f: (sums[f] if present[f] else None) for f in COUNTERS}
+    last_components = within[-1].get("components", {}).get(comp, {})
+    d["utilization"] = _sum_gauge(last_components, "utilization")
+    d["buffer_events"] = _sum_gauge(last_components, "buffer_events")
+    d["buffer_bytes"] = _sum_gauge(last_components, "buffer_bytes")
+    d["window_sec"] = t1 - t0
+    d["window"] = {"from": iso(sequence[0]["ts"]), "to": iso(sequence[-1]["ts"]), "scrapes": len(sequence)}
+    d["reset"] = reset
+    d["gaps"] = gaps
     return d
 
 
@@ -231,6 +314,7 @@ def summarize_stage(st, rows, comps, cw, batch_size):
         },
         "aggregator": {},
     }
+    quality = []
     for role, comp in comps.items():
         if not comp:
             continue
@@ -239,15 +323,24 @@ def summarize_stage(st, rows, comps, cw, batch_size):
             out["aggregator"][role] = {"component": comp, "note": "no scrape covering this stage"}
             continue
         # Vector only emits an errors/discarded counter once something has
-        # been counted, so an absent series means zero, not unknown.
-        entry = {"component": comp, "received": d.get("received"), "sent": d.get("sent"), "errors": d.get("errors", 0.0),
-                 "discarded": d.get("discarded", 0.0), "utilization": d.get("utilization"),
-                 "buffer_events": d.get("buffer_events"), "buffer_bytes": d.get("buffer_bytes")}
+        # been counted, so a series that never appeared in the window means
+        # zero, not unknown. A series that appeared and then vanished is a
+        # gap instead (component_delta already excludes it from the sum and
+        # flags it in d["gaps"] rather than treating it as zero).
+        entry = {"component": comp, "received": d.get("received"), "sent": d.get("sent"),
+                 "errors": d["errors"] if d["errors"] is not None else 0.0,
+                 "discarded": d["discarded"] if d["discarded"] is not None else 0.0,
+                 "utilization": d.get("utilization"),
+                 "buffer_events": d.get("buffer_events"), "buffer_bytes": d.get("buffer_bytes"),
+                 "reset": d["reset"], "gaps": d["gaps"], "window": d["window"]}
         if d.get("received") is not None and d["window_sec"]:
             entry["received_per_sec"] = d["received"] / d["window_sec"]
         if d.get("handler_count"):
             entry["http_handler_ms_avg"] = 1000 * d["handler_seconds_sum"] / d["handler_count"]
         out["aggregator"][role] = entry
+        if d["reset"] or d["gaps"]:
+            quality.append({"role": role, "component": comp, "reset": d["reset"], "gaps": d["gaps"]})
+    out["quality"] = quality
     # per-record vs per-POST sanity: source should see records/batch_size if it counts POSTs
     src, rec = out["aggregator"].get("source"), out["aggregator"].get("records")
     if src and rec and src.get("received") and rec.get("received") is not None and batch_size:
@@ -328,9 +421,11 @@ def render(r):
     L.append(f"# Run {r['run']['run_id']} — correlation report")
     L.append("")
     L.append("Read this with docs/results-guide.md. Rules that apply first: if validity.valid is false the run is void; "
-             "eps and counts are per stage; aggregator counts are deltas of Vector counters between the scrapes nearest the stage "
-             "boundaries; service CPU is the AWS/ECS CPUUtilization of the aggregator service (% of reserved), average and maximum "
-             "over the stage; 'records_per_source_event' should equal batch_size when the source counts POSTs and the records "
+             "eps and counts are per stage; aggregator counts are the sum of positive increments across the scrapes covering "
+             "the stage (a Vector restart mid-run is a counter reset, handled without going negative — see quality notes below "
+             "any stage where one was detected, or where a series briefly vanished from a scrape); service CPU is the AWS/ECS "
+             "CPUUtilization of the aggregator service (% of reserved), average and maximum over the stage; "
+             "'records_per_source_event' should equal batch_size when the source counts POSTs and the records "
              "component counts log records — 1.0 means the source already emits one event per record.")
     L.append("")
     v = r["validity"]
@@ -356,6 +451,21 @@ def render(r):
                 fmt(rec.get("received"), 0), fmt(rec.get("errors"), 0), fmt(rec.get("utilization"), 2), fmt(sink.get("sent"), 0),
                 fmt(sink.get("buffer_events"), 0), fmt(cpu.get("avg")), fmt(cpu.get("max"))))
         L.append("")
+        quality_lines = []
+        for i, s in enumerate(r["stages"]):
+            notes = []
+            for item in s.get("quality", []):
+                bits = []
+                if item["reset"]:
+                    bits.append("counter reset (non-negative delta used)")
+                if item["gaps"]:
+                    bits.append(f"{item['gaps']} gap(s) in the series (increment unknown for that step, not counted)")
+                notes.append(f"{item['role']} ({item['component']}): " + ", ".join(bits))
+            if notes:
+                quality_lines.append(f"- stage {i} quality: " + "; ".join(notes))
+        if quality_lines:
+            L.extend(quality_lines)
+            L.append("")
         k = r["knee"]
         if k:
             L.append(f"- knee: stage {k['stage']} — {k['reason']}" + (f"; eps {fmt(k.get('eps_delivered'), 0)}; service cpu {k.get('service_cpu_pct')}" if k.get("stage") is not None else ""))
