@@ -31,3 +31,5 @@ credentials*
 
 # Local worktrees for plan execution (scratch, never part of the image)
 .worktrees/
+__pycache__/
+*.pyc

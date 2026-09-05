@@ -216,12 +216,14 @@ def _series_increment(values):
     return increment, reset, gaps, had_data
 
 
-def _sum_gauge(host_map, field):
-    """Latest-snapshot gauge fields (utilization, buffer sizes) are not
-    differenced — just summed across hosts, as parse_prom used to sum them
-    across all labels before host-keying existed."""
+def _gauge(host_map, field):
+    """Latest-snapshot gauge fields are not differenced. Buffer sizes are
+    summed across hosts (a fleet-wide backlog); utilization is a 0..1 share
+    per host, so the fleet figure is the busiest host, not a sum."""
     vals = [h[field] for h in host_map.values() if field in h]
-    return sum(vals) if vals else None
+    if not vals:
+        return None
+    return max(vals) if field == "utilization" else sum(vals)
 
 
 def component_delta(rows, comp, t0, t1):
@@ -254,9 +256,9 @@ def component_delta(rows, comp, t0, t1):
             gaps += f_gaps
     d = {f: (sums[f] if present[f] else None) for f in COUNTERS}
     last_components = within[-1].get("components", {}).get(comp, {})
-    d["utilization"] = _sum_gauge(last_components, "utilization")
-    d["buffer_events"] = _sum_gauge(last_components, "buffer_events")
-    d["buffer_bytes"] = _sum_gauge(last_components, "buffer_bytes")
+    d["utilization"] = _gauge(last_components, "utilization")
+    d["buffer_events"] = _gauge(last_components, "buffer_events")
+    d["buffer_bytes"] = _gauge(last_components, "buffer_bytes")
     d["window_sec"] = t1 - t0
     d["window"] = {"from": iso(sequence[0]["ts"]), "to": iso(sequence[-1]["ts"]), "scrapes": len(sequence)}
     d["reset"] = reset
