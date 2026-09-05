@@ -1,7 +1,7 @@
 # Why a run is invalid, and what to do about it
 
 `validity.valid: false` means the numbers in that run describe the generator, not the target.
-This page covers where the reason is recorded and, for each of the three conditions that can
+This page covers where the reason is recorded and, for each of the four conditions that can
 cause it, the fix and the steps. Failed SLO thresholds do **not** make a run invalid; they are the
 measurement and live under `thresholds.slo`.
 
@@ -121,6 +121,44 @@ not a measurement of the configured rate.
    transport error partway through, treat it as Condition 2 for that member.
 5. Rerun with a fresh `RUN_ID` and confirm `fleet.generators_reported` equals
    `fleet.generator_count`.
+
+## Condition 4: fleet members disagree on configuration
+
+**Reason text:** `fleet members disagree on configuration: <field> differs ...`, where `<field>` is
+`generator.gen_count`, `run.active_types` or `resolved_config`. Fleet summaries only.
+
+**What it means.** Every generator ran and reported, but they were not all running the same test.
+The merged counts are real events that were really sent — they just do not describe one
+configuration, so the fleet's EPS, per-type breakdown and thresholds cannot be attributed to the
+profile named in `resolved_config` (which is the FIRST reporting generator's). Typical causes:
+the task definition was updated between launching two generators; one generator got a different
+`TYPES`, `<TYPE>_BATCH_SIZE` or profile through its overrides; a `merge` was run with a `--count`
+that does not match the `GEN_COUNT` the generators were launched with.
+
+Harder disagreements are not this condition: a differing `run_id` or `schema_version`, a summary
+whose `generator.gen_index` is not its directory index, a duplicate index, or an index outside the
+fleet make the merge **throw** instead — no fleet summary is written at all, and the merge command
+exits 1 with the reason on stderr. `run.k6_version`, `rate` and `thresholds.structural_count`
+disagreements are only warnings. See `docs/results-guide.md` §4.2.
+
+**Recommended fix.** Find the odd generator, make the fleet uniform, rerun. Do not reason from the
+merged numbers.
+
+**Steps.**
+
+1. Read the reason: `generator.gen_count` names each generator and its value, `run.active_types`
+   names the values, `resolved_config` names which generators differ from `gen-0`.
+2. Compare the configurations directly, one generator against another:
+   `diff <(aws s3 cp s3://<bucket>/runs/<run_id>/gen-0/summary.json - | jq -S .resolved_config) \
+        <(aws s3 cp s3://<bucket>/runs/<run_id>/gen-1/summary.json - | jq -S .resolved_config)`
+   (`jq -S` sorts keys, which is how the merge compares them — key order is never the difference).
+3. For a `generator.gen_count` mismatch, check the launch: every generator must receive the same
+   `GEN_COUNT`, and a `fleet-launch merge --count N` must use that same N. A wrong `gen_count` also
+   means each generator sized its share of the rate wrongly, so `rate.*` is not the fleet's rate.
+4. For `run.active_types`, check `TYPES` in the overrides; for `resolved_config`, check the profile
+   baked into the image each task ran (a task-definition revision that changed the image mid-launch
+   gives exactly this).
+5. Rerun the whole fleet with one configuration and a fresh `RUN_ID`.
 
 ## Validity versus exit code
 

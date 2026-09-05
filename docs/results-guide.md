@@ -177,6 +177,8 @@ field keeps its shape, so a reader of a single summary can read a fleet summary 
 fleet.generator_count       configured N
 fleet.generators_reported   how many produced a summary.json
 fleet.exit_code             the fleet verdict as an exit code (see §5)
+fleet.timeline_coverage     how much of the fleet timeline.jsonl covers (see below); null only
+                            when a merge was run without timeline information at all
 fleet.generators[]          per generator: gen_index, exit_code, summary_present, started_at,
                             ended_at, duration_sec, rate, events_attempted, events_sent,
                             send_failure_rate, send_errors, dropped_iterations,
@@ -194,13 +196,72 @@ Merge rules:
 | `send_duration.min` / `.max` | min / max |
 | `send_duration.avg`, `med`, `p(90)`, `p(95)`, `p(99)` | **worst generator (max)**: an upper bound, not a true fleet percentile |
 | `thresholds.slo[].ok` | true only if true on every generator that reported it |
-| `validity.valid` | AND of the generators, and every generator must have reported |
-| `validity.reasons` | each generator's reasons prefixed `gen-<i>:`, plus `gen-<i> produced no summary.json (exit <code>)` |
+| `validity.valid` | AND of the generators; every generator must have reported; and the members must agree on configuration (§4.2) |
+| `validity.reasons` | each generator's reasons prefixed `gen-<i>:`, plus `gen-<i> produced no summary.json (exit <code>)` and any `fleet members disagree on configuration:` line |
 | `warnings` | a warning every generator emitted appears once; others are prefixed `gen-<i>:` |
 | `run.started_at` / `ended_at` | earliest / latest; `duration_sec` recomputed |
 
 A generator with `summary_present: false` in `fleet.generators[]` crashed or was misconfigured;
 its `run.log` is still under `gen-<i>/` and is the place to look.
+
+### 4.1 `fleet.timeline_coverage` — how much of the fleet the timeline covers
+
+The merged `timeline.jsonl` is the **sum** of the per-generator timelines that existed. A
+generator whose timeline is missing is simply absent from every bucket, and nothing inside the
+file says so, so a per-stage EPS or failure rate read from it would silently under-count. This
+block is that statement, and it is the first thing to read before any per-stage conclusion.
+
+```
+fleet.timeline_coverage.expected        generators that reported a summary — the ones a timeline
+                                        could be expected from (a crashed generator is not held
+                                        against coverage)
+fleet.timeline_coverage.present[]       generator indexes whose timeline was found and merged
+fleet.timeline_coverage.missing[]       reporting generators with no timeline
+fleet.timeline_coverage.complete        missing[] is empty and at least one generator was expected
+fleet.timeline_coverage.configured_off  NO generator had a timeline: EMIT_TIMELINE=0 or a profile
+                                        with emit_timeline false — an intentional absence, not a gap
+```
+
+| Situation | `complete` | `configured_off` | What the merge does |
+|---|---|---|---|
+| every reporting generator shipped one | true | false | nothing to say |
+| some did | false | false | a warning naming the missing generators and saying the fleet timeline under-counts; the report prints `timeline coverage : 2/3 generators (missing gen-1) — fleet timeline under-counts` |
+| none did | false | true | no warning; the report prints `timeline coverage : none (timeline emission off)` |
+
+When coverage is complete the merge also compares Σ`events_sent` over the merged timeline with
+`metrics.events_sent.count`. Below 90% it adds a **warning** (never an error, and never
+`valid: false`): the timeline looks truncated — a generator's `--out json` was cut short, or
+buckets were lost — so per-stage figures under-count even though every generator is represented.
+
+**Consumers** (including `tools/correlate_run.py`) must treat `complete: false` with
+`configured_off: false` as "the timeline is a lower bound": say so prominently, list the stages,
+and draw no knee verdict from figures that are missing a generator.
+
+### 4.2 Fleet identity — what makes N summaries one fleet
+
+Merging summaries that are not N members of one run would invent a measurement, so some
+disagreements stop the merge and others only void it.
+
+**Hard (the merge throws; nothing is written, the fleet artifacts do not exist):**
+
+| Condition | Why |
+|---|---|
+| `run.run_id` differs across reporting generators | these are two runs, not one fleet |
+| `schema_version` differs | the fields do not mean the same thing |
+| a summary's `generator.gen_index` is not its `gen-<i>` directory index | the summary does not belong to that generator |
+| the same generator index is supplied twice | its numbers would be counted twice |
+| a generator index is outside `0..gen_count-1` | the fleet is not the fleet that was merged |
+
+**Soft (the fleet merges, `validity.valid` is false, reason prefixed `fleet members disagree on
+configuration:`):** `generator.gen_count` disagreeing between generators or with the number of
+directories merged; `run.active_types` disagreeing; `resolved_config` disagreeing. The evidence is
+still merged and still worth reading — it just does not describe one configuration. See
+`docs/run-validity.md` Condition 4.
+
+`resolved_config` is compared **canonically** — JSON with every object's keys sorted, recursively —
+so a difference in key order is never reported as a disagreement.
+
+**Warnings only:** `run.k6_version`, `rate` and `thresholds.structural_count`.
 
 ## 5. Exit codes and verdicts
 

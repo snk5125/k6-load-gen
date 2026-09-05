@@ -211,14 +211,12 @@ describe('mergeSummaries — warnings and samples', () => {
     expect(f.warnings).toContain('gen-1: only on one');
   });
 
-  it('warns when generators disagree on run identity or configuration', () => {
-    const other = gen(1, { run: { ...gen(1).run, run_id: 'someone-else' } });
+  it('still warns (only) about a k6 version disagreement', () => {
+    const other = gen(1, { run: { ...gen(1).run, k6_version: 'v2.1.0' } });
     const f = mergeSummaries([input(0, gen(0)), input(1, other)], 2);
-    expect(f.run.run_id).toBe('fleet-1');
-    expect(f.warnings.join(' ')).toMatch(/disagree on run\.run_id/);
-
-    const cfg = gen(1, { resolved_config: { name: 'different' } });
-    expect(mergeSummaries([input(0, gen(0)), input(1, cfg)], 2).warnings.join(' ')).toMatch(/resolved_config/);
+    expect(f.run.k6_version).toBe('v2.2.0');
+    expect(f.warnings.join(' ')).toMatch(/disagree on run\.k6_version/);
+    expect(f.validity.valid).toBe(true);
   });
 
   it('interleaves payload samples across generators and caps the total', () => {
@@ -259,10 +257,143 @@ describe('exitCodePrecedence — the rule over bare codes', () => {
 
 describe('isFleetSummary', () => {
   it('accepts only an object with a non-null object fleet block', () => {
-    expect(isFleetSummary(mergeSummaries([input(0, gen(0))], 1))).toBe(true);
+    expect(isFleetSummary(mergeSummaries([input(0, gen(0, {}, 1))], 1))).toBe(true);
     expect(isFleetSummary(gen(0))).toBe(false);
     expect(isFleetSummary({ fleet: null })).toBe(false);
     expect(isFleetSummary({ fleet: 'yes' })).toBe(false);
     expect(isFleetSummary(null)).toBe(false);
+  });
+});
+
+describe('mergeSummaries — fleet identity (hard errors)', () => {
+  // A hard error throws BEFORE anything is written: a fleet whose members are not
+  // the same run is not a measurement, and cli.ts writes nothing on a throw.
+  it('throws when reporting generators disagree on run_id', () => {
+    const other = gen(1, { run: { ...gen(1).run, run_id: 'someone-else' } });
+    expect(() => mergeSummaries([input(0, gen(0)), input(1, other)], 2)).toThrow(
+      /run\.run_id.*gen-0=.*fleet-1.*gen-1=.*someone-else/,
+    );
+  });
+
+  it('throws when reporting generators disagree on schema_version', () => {
+    expect(() => mergeSummaries([input(0, gen(0)), input(1, gen(1, { schema_version: 3 }))], 2)).toThrow(
+      /schema_version/,
+    );
+  });
+
+  it('throws when a summary carries a gen_index that is not its directory index', () => {
+    const mislabelled = gen(1, { generator: { gen_index: 0, gen_count: 2 } });
+    expect(() => mergeSummaries([input(0, gen(0)), input(1, mislabelled)], 2)).toThrow(
+      /gen-1.*generator\.gen_index 0/,
+    );
+  });
+
+  it('throws on a duplicate generator index', () => {
+    expect(() => mergeSummaries([input(0, gen(0)), input(0, gen(0))], 2)).toThrow(/duplicate generator index.*gen-0/);
+  });
+
+  it('throws when a generator index is outside the fleet', () => {
+    expect(() => mergeSummaries([input(0, gen(0)), input(3, gen(3))], 2)).toThrow(/gen-3.*fleet of 2/);
+    // the check covers a generator that produced nothing, too
+    expect(() => mergeSummaries([input(0, gen(0)), input(3, null, 107)], 2)).toThrow(/gen-3.*fleet of 2/);
+  });
+});
+
+describe('mergeSummaries — fleet identity (soft: invalid, still merged)', () => {
+  const reasonsOf = (f: ReturnType<typeof mergeSummaries>) => f.validity.reasons.join(' | ');
+
+  it('marks the fleet invalid when a generator was configured for a different gen_count', () => {
+    const f = mergeSummaries([input(0, gen(0)), input(1, gen(1, { generator: { gen_index: 1, gen_count: 3 } }))], 2);
+    expect(f.validity.valid).toBe(false);
+    expect(reasonsOf(f)).toMatch(/fleet members disagree on configuration: generator\.gen_count/);
+    expect(reasonsOf(f)).toMatch(/gen-1=3/);
+    // evidence is still merged
+    expect(f.metrics.events_sent.count).toBe(2000);
+  });
+
+  it('marks the fleet invalid when every generator agrees on a gen_count the merge did not see', () => {
+    const f = mergeSummaries([input(0, gen(0, {}, 5)), input(1, gen(1, {}, 5))], 2);
+    expect(f.validity.valid).toBe(false);
+    expect(reasonsOf(f)).toMatch(/generator\.gen_count/);
+    expect(reasonsOf(f)).toMatch(/2 generator directories/);
+  });
+
+  it('marks the fleet invalid when generators disagree on active_types', () => {
+    const other = gen(1, { run: { ...gen(1).run, active_types: ['syslog-app'] } });
+    const f = mergeSummaries([input(0, gen(0)), input(1, other)], 2);
+    expect(f.validity.valid).toBe(false);
+    expect(reasonsOf(f)).toMatch(/fleet members disagree on configuration: run\.active_types/);
+    expect(reasonsOf(f)).toMatch(/gen-1/);
+  });
+
+  it('marks the fleet invalid when generators disagree on resolved_config', () => {
+    const f = mergeSummaries([input(0, gen(0)), input(1, gen(1, { resolved_config: { name: 'different' } }))], 2);
+    expect(f.validity.valid).toBe(false);
+    expect(reasonsOf(f)).toMatch(/fleet members disagree on configuration: resolved_config/);
+    expect(reasonsOf(f)).toMatch(/gen-1/);
+    expect(f.resolved_config).toEqual(gen(0).resolved_config);
+  });
+
+  it('compares resolved_config canonically: key order and nesting order never matter', () => {
+    const a = gen(0, { resolved_config: { name: 'p', target: { transport: 'null', tls: false }, types: { a: { scenario: 'sweep' }, b: { scenario: 'smoke' } } } });
+    const b = gen(1, { resolved_config: { types: { b: { scenario: 'smoke' }, a: { scenario: 'sweep' } }, target: { tls: false, transport: 'null' }, name: 'p' } });
+    const f = mergeSummaries([input(0, a), input(1, b)], 2);
+    expect(f.validity.valid).toBe(true);
+    expect(reasonsOf(f)).not.toMatch(/resolved_config/);
+  });
+
+  it('no longer duplicates the identity checks as warnings', () => {
+    const f = mergeSummaries([input(0, gen(0)), input(1, gen(1, { resolved_config: { name: 'different' } }))], 2);
+    expect(f.warnings.join(' ')).not.toMatch(/disagree on resolved_config/);
+  });
+});
+
+describe('mergeSummaries — timeline coverage', () => {
+  it('is null when the caller said nothing about timelines', () => {
+    expect(mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2).fleet.timeline_coverage).toBeNull();
+  });
+
+  it('is complete when every reporting generator shipped a timeline', () => {
+    const f = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2, { 0: true, 1: true });
+    expect(f.fleet.timeline_coverage).toEqual({
+      expected: 2, present: [0, 1], missing: [], complete: true, configured_off: false,
+    });
+    expect(f.warnings.join(' ')).not.toMatch(/timeline/);
+  });
+
+  it('names the missing generators and warns that the fleet timeline under-counts', () => {
+    const f = mergeSummaries([input(0, gen(0, {}, 3)), input(1, gen(1, {}, 3)), input(2, gen(2, {}, 3))], 3, { 0: true, 1: false, 2: true });
+    expect(f.fleet.timeline_coverage).toEqual({
+      expected: 3, present: [0, 2], missing: [1], complete: false, configured_off: false,
+    });
+    expect(f.warnings.join(' ')).toMatch(/timeline coverage.*gen-1.*under-counts/);
+  });
+
+  it('is configured_off, and silent, when no generator has a timeline at all', () => {
+    const f = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2, { 0: false, 1: false });
+    expect(f.fleet.timeline_coverage).toEqual({
+      expected: 2, present: [], missing: [0, 1], complete: false, configured_off: true,
+    });
+    expect(f.warnings.join(' ')).not.toMatch(/timeline coverage/);
+  });
+
+  it('expects a timeline only from generators that reported a summary', () => {
+    const f = mergeSummaries([input(0, gen(0, {}, 2)), input(1, null, 107)], 2, { 0: true, 1: false });
+    expect(f.fleet.timeline_coverage).toMatchObject({ expected: 1, present: [0], missing: [], complete: true });
+  });
+
+  it('warns when a complete timeline holds less than 90% of the summary events_sent', () => {
+    // each generator sent 1000 -> 2000 in the fleet summary; the timeline holds 1700 (85%)
+    const f = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2, { 0: true, 1: true }, 1700);
+    expect(f.warnings.join(' ')).toMatch(/timeline.*1700.*2000/);
+    expect(f.validity.valid).toBe(true); // a warning, never an error
+  });
+
+  it('does not warn at 90% or above, or when coverage is incomplete', () => {
+    expect(mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2, { 0: true, 1: true }, 1900).warnings.join(' '))
+      .not.toMatch(/less than 90%|truncated/);
+    // incomplete coverage already carries its own warning; the totals cannot be compared
+    const partial = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2, { 0: true, 1: false }, 1000);
+    expect(partial.warnings.join(' ')).not.toMatch(/truncated/);
   });
 });

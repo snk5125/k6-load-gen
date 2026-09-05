@@ -45,13 +45,20 @@ export function readGeneratorDir(dir: string): { input: GeneratorInput; timeline
 /** Merges the generator directories into `outDir` and returns the rendered report. */
 export function mergeDirs(outDir: string, genDirs: string[]): string {
   const read = genDirs.map(readGeneratorDir);
-  const fleet = mergeSummaries(read.map((r) => r.input), genDirs.length);
   const timelines = read.map((r) => r.timeline).filter((t): t is TimelineBucket[] => t !== null);
   // Every merge step runs BEFORE anything touches disk: bin/run.sh ships
   // fleet/summary.json on file existence, so a summary written ahead of a
   // timeline merge that then throws would be shipped as authoritative while
   // the console said the merge failed.
   const merged = timelines.length > 0 ? mergeBuckets(timelines) : null;
+  // Which generators had a timeline, and how much of the run the merged one
+  // holds, are facts only this side knows — the summaries never mention them.
+  // Both fleet paths (bin/run.sh's single task and fleet-launch's S3 merge)
+  // arrive here, so the coverage block is filled in exactly once.
+  const present: Record<number, boolean> = {};
+  for (const r of read) present[r.input.gen_index] = r.timeline !== null;
+  const mergedEventsSent = merged === null ? null : merged.reduce((a, b) => a + b.events_sent, 0);
+  const fleet = mergeSummaries(read.map((r) => r.input), genDirs.length, present, mergedEventsSent);
   const report = renderFleetSummary(fleet);
 
   mkdirSync(outDir, { recursive: true });
