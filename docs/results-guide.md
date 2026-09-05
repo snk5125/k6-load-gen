@@ -77,10 +77,12 @@ runs; go to the summary for detail.
 
 ```
 schema_version   2
-run              { run_id, started_at, ended_at, duration_sec, k6_version, active_types[] }
+run              { run_id, started_at, ended_at, duration_sec, k6_version, active_types[],
+                   start_at }
 resolved_config  the profile as it ran, with per-type overrides applied and secrets redacted
 generator        { gen_index (null on a fleet), gen_count }
 rate             { requested_eps, achieved_eps, delta_pct }        rules 3 and 4
+schedule         what the run intended to offer, stage by stage     §3.0
 metrics          k6 metric values by name                           §3.1
 types            per log type breakdown                             §3.2
 thresholds       { slo[ {ok, metric, expression} ], structural_count }
@@ -94,6 +96,43 @@ fleet            present only on a merged fleet summary             §4
 `run.active_types` is which types actually ran; `resolved_config.types` lists every type the
 profile declares. They differ when `TYPES=` selected a subset. `resolved_config.target.options`
 values that are not on a safe allowlist appear as `"[redacted]"`; the endpoint itself is kept.
+
+`run.start_at` is the instant this generator was **scheduled** to start — `START_AT` exactly as it
+was set (an ISO-8601 UTC timestamp, or a bare Unix epoch in seconds), or `null` when nothing
+scheduled the run. `run.started_at` is when k6 actually began. The two differ by however long the
+container took to place and k6 took to initialise; across a fleet that difference is
+`fleet.start_skew_sec` (§4). Every task of a `fleet-launch`-launched fleet is given the *same*
+`start_at`, which is what makes it the right thing to align stage boundaries on — see §8a.
+
+### 3.0 `schedule` — what the run intended to offer
+
+`rate` describes the **peak stage only**, and `resolved_config` names the shape but not the
+resolved stage list. `schedule` is the missing statement of intent: the k6 stages as they were
+actually resolved, in seconds and in events per second, so a timeline can be read against what was
+offered instead of having its stage boundaries guessed from what was delivered. It is `null` on an
+artifact produced before this field existed — treat that as *unknown*, never as *no stages*.
+
+One entry per **active** type (stages are per type — see the multi-type note in §8a):
+
+```
+schedule.<type>.executor                  "ramping-arrival-rate" or "shared-iterations"
+schedule.<type>.duration_scale            DURATION_SCALE as it applied (1 when unset)
+schedule.<type>.gen_count                 fleet size the targets were sliced for
+schedule.<type>.batch_size                events per iteration, after any <TYPE>_BATCH_SIZE
+schedule.<type>.start_rate_per_sec        ramping-arrival-rate only: k6's startRate, iterations/s
+schedule.<type>.iterations, .vus          shared-iterations only
+schedule.<type>.stages[]                  in order; empty for shared-iterations
+  .target_iterations_per_sec              k6's own `target`: ITERATIONS/s, per generator
+  .target_eps_fleet                       target_iterations_per_sec x batch_size x gen_count —
+                                          EVENTS/s offered by the whole fleet at that stage
+  .duration_sec                           the stage's length, AFTER DURATION_SCALE
+```
+
+`target_eps_fleet` is directly comparable with a timeline bucket's `eps` (also fleet-wide on a
+merged timeline): offered against delivered. Note that k6 ramps **linearly** within a stage, so a
+stage is not a flat rate and a bucket cannot be labelled "ramp" or "hold" from this block — only
+which stage it belongs to. Stage targets carry the same per-stage rounding `rate.delta_pct`
+reports (§3, rule 4): `target_eps_fleet` is what was *achievable*, not the un-rounded request.
 
 ### 3.1 `metrics`
 
@@ -179,6 +218,8 @@ fleet.generators_reported   how many produced a summary.json
 fleet.exit_code             the fleet verdict as an exit code (see §5)
 fleet.timeline_coverage     how much of the fleet timeline.jsonl covers (see below); null only
                             when a merge was run without timeline information at all
+fleet.start_skew_sec        max(started_at) - min(started_at) over reporting generators (see
+                            below); null when no generator reported a parseable start
 fleet.generators[]          per generator: gen_index, exit_code, summary_present, started_at,
                             ended_at, duration_sec, rate, events_attempted, events_sent,
                             send_failure_rate, send_errors, dropped_iterations,
@@ -200,6 +241,8 @@ Merge rules:
 | `validity.reasons` | each generator's reasons prefixed `gen-<i>:`, plus `gen-<i> produced no summary.json (exit <code>)` and any `fleet members disagree on configuration:` line |
 | `warnings` | a warning every generator emitted appears once; others are prefixed `gen-<i>:` |
 | `run.started_at` / `ended_at` | earliest / latest; `duration_sec` recomputed |
+| `run.start_at` | taken from one generator (every task is given the same `START_AT`); a disagreement is a **warning** |
+| `schedule` | taken from one generator; a disagreement makes the fleet invalid (§4.2) |
 
 A generator with `summary_present: false` in `fleet.generators[]` crashed or was misconfigured;
 its `run.log` is still under `gen-<i>/` and is the place to look.
@@ -237,6 +280,23 @@ buckets were lost — so per-stage figures under-count even though every generat
 `configured_off: false` as "the timeline is a lower bound": say so prominently, list the stages,
 and draw no knee verdict from figures that are missing a generator.
 
+### 4.1a `fleet.start_skew_sec` — how far apart the fleet actually began
+
+`max(started_at) - min(started_at)` over the **reporting** generators, in seconds (a generator that
+never wrote a summary has no start to be skewed from, so it is not counted). `0` means they started
+together; `null` means no generator reported a parseable start.
+
+It bounds how sharp any per-stage reading can be. The merged timeline sums generators whose stage
+boundaries sit this many seconds apart, so when the skew reaches the timeline bucket width the
+merge adds a **warning**: some bucket holds two different stages and no bucket-level boundary is
+exact. The width used is the merged timeline's own `bucket_sec` when there is one, else 15 s
+(`TIMELINE_BUCKET_SEC`'s default). The fleet report prints it as `start skew : 3.0s across
+generators`.
+
+Reducing it is what `START_AT` is for — see the scheduled-start section of
+`docs/deployment-guide.md`. A large skew with `run.start_at` set means the tasks were placed late,
+not that the schedule was wrong.
+
 ### 4.2 Fleet identity — what makes N summaries one fleet
 
 Merging summaries that are not N members of one run would invent a measurement, so some
@@ -254,12 +314,17 @@ disagreements stop the merge and others only void it.
 
 **Soft (the fleet merges, `validity.valid` is false, reason prefixed `fleet members disagree on
 configuration:`):** `generator.gen_count` disagreeing between generators or with the number of
-directories merged; `run.active_types` disagreeing; `resolved_config` disagreeing. The evidence is
-still merged and still worth reading — it just does not describe one configuration. See
-`docs/run-validity.md` Condition 4.
+directories merged; `run.active_types` disagreeing; `resolved_config` disagreeing; `schedule`
+disagreeing. The evidence is still merged and still worth reading — it just does not describe one
+configuration. See `docs/run-validity.md` Condition 4.
 
-`resolved_config` is compared **canonically** — JSON with every object's keys sorted, recursively —
-so a difference in key order is never reported as a disagreement.
+`schedule` is checked separately from `resolved_config` on purpose: `DURATION_SCALE` and
+`GEN_COUNT` live in the environment, not the profile, so two generators can agree on
+`resolved_config` and still have run different stage boundaries — which makes every per-stage
+reading of the merged timeline describe a schedule neither of them ran.
+
+`resolved_config` and `schedule` are compared **canonically** — JSON with every object's keys
+sorted, recursively — so a difference in key order is never reported as a disagreement.
 
 **Warnings only:** `run.k6_version`, `rate` and `thresholds.structural_count`.
 
@@ -296,7 +361,9 @@ wide (default 15) and aligned to the epoch, so generators of one run share bound
 | `dropped_iterations` | must stay 0 |
 
 Use it to see the shape of a run: for a `sweep`, `eps` climbs in steps while `p99` and
-`failure_rate` show where the target stops keeping up. The fleet timeline is the bucket-wise sum
+`failure_rate` show where the target stops keeping up. Which stage a bucket belongs to comes from
+`schedule` (§3.0), not from the bucket's own `eps` — inferring stages from the delivered rate
+mislabels exactly the runs where the generator or target failed to keep up. The fleet timeline is the bucket-wise sum
 of the generators' timelines, with percentiles taken as the worst generator per bucket.
 
 A timeline is absent when the run set `EMIT_TIMELINE=0` or the profile's `emit_timeline: false`.
@@ -318,7 +385,12 @@ Given a `run_id`:
 6. Report latency: `metrics.send_duration` `med` / `p(95)` / `p(99)`, stating that these are
    per batch of `batch_size` events, and on a fleet that percentiles are the worst generator's.
 7. Report the verdict: `thresholds.slo` entries with `ok: false`, and the exit code if known.
-8. If the question is about behaviour over time (a knee, a ramp, recovery), use the timeline.
+8. If the question is about behaviour over time (a knee, a ramp, recovery), use the timeline,
+   and read it against `schedule` (§3.0): each stage's `duration_sec` accumulated from
+   `run.start_at` (or `run.started_at`) says which stage a bucket belongs to, and
+   `target_eps_fleet` says what was offered there. On a fleet, check `fleet.start_skew_sec`
+   (§4.1a) first — a skew at or above `bucket_sec` means no bucket-level boundary is exact.
+   `tools/correlate_run.py` does all of this (§8a).
 9. Surface every entry of `warnings` that changes how a number should be read (§3.3).
 
 For a set of runs, start from `index/dt=*/` rows: filter on `valid`, group by `profile` and
@@ -390,10 +462,36 @@ python3 tools/correlate_run.py scrape --url http://<aggregator>:9598/metrics --i
 python3 tools/correlate_run.py report --results-uri s3://<bucket> --run-id <run_id> --metrics vector-metrics.jsonl --source http_json --records json-app --sink Splunk --cw-cluster <vector-cluster> --cw-service <vector-service> --json report.json
 ```
 
-Per stage it shows what the generator delivered (eps, p99, failures, dropped iterations), what the
-named source, record-level and sink components received, sent, errored and how busy they were, and
-the service's CPU average and maximum, then applies the knee rule from §7: the first stage where
-p99 more than doubles against the first stages or failures exceed 0.1%, with the CPU at that point.
+Per stage it shows what the generator offered and delivered (eps, p99, failures, dropped
+iterations), what the named source, record-level and sink components received, sent, errored and
+how busy they were, and the service's CPU average and maximum, then applies the knee rule from §7:
+the first stage where p99 more than doubles against the first stages or failures exceed 0.1%, with
+the CPU at that point.
+
+**Where the stage boundaries come from.** When the summary carries a `schedule` (§3.0), the stages
+are the run's own **intended** stages: each stage's `duration_sec` accumulated from a start
+reference, with every timeline bucket assigned to the stage containing the bucket's start. The
+`eps offered` column is that stage's `target_eps_fleet`, printed beside `eps delivered`. The start
+reference is `run.start_at` when the run was scheduled with `START_AT` — one instant the whole
+fleet shared — and otherwise the earliest of `fleet.generators[].started_at` (single generator:
+`run.started_at`). Because generators do not all begin exactly on that instant, the report states a
+boundary precision (`±N s`) and marks each stage's straddling buckets in the `sched` column as
+`(+Nb)`: a straddling bucket holds two different offered rates, so its delivered EPS belongs
+cleanly to neither stage. Buckets that fall outside the schedule entirely (an overrun) form their
+own row with `sched` `-` and no offered eps. k6 ramps linearly within a stage, so a bucket carries
+a stage index and never a "ramp"/"hold" label.
+
+Only an artifact with **no** `schedule` falls back to the old behaviour — grouping consecutive
+buckets whose delivered EPS stays within 15% — and the report then says `stage boundaries inferred
+from delivered EPS (heuristic; older artifact)`. That inference mislabels precisely the runs worth
+analysing, the ones that failed to deliver what they offered, which is why `schedule` exists.
+
+**Multi-type runs.** Stages are per type. The report builds one stage grid when the active types'
+stage boundaries are identical, and then `eps offered` is their **sum** across types (a timeline
+bucket sums every type, so the sum is what the bucket should be compared against); it says so in
+the alignment note. When the active types' boundaries differ, no single grid can describe a bucket,
+so the report falls back to the heuristic and says why. Run one type at a time (`TYPES=`) when you
+need per-type stage attribution.
 
 Aggregator counts are the sum of positive increments across the consecutive scrapes covering each
 stage rather than a plain endpoint subtraction, so a Vector counter reset (process restart mid-run)

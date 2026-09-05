@@ -707,8 +707,11 @@ sets `START_AT`, the launcher leaves it alone and injects nothing further; `--no
 the whole feature off (no `START_AT` is injected unless the file supplies one). `START_AT` also
 accepts a bare Unix epoch in seconds, for callers that construct it themselves. A generator that
 starts after its `START_AT` (a slow placement, or a value already in the past) logs the lateness to
-stderr and proceeds immediately rather than waiting or failing; `fleet.start_skew_sec` in the merged
-summary is what reports how late a generator actually was.
+stderr and proceeds immediately rather than waiting or failing. `fleet.start_skew_sec` in the merged
+summary reports what that cost: how far apart the reporting generators actually began, in seconds
+(`max(started_at) - min(started_at)`), with a warning when it reaches the timeline bucket width. The
+instant they were told to start is published as `run.start_at`, and `tools/correlate_run.py` aligns
+stage boundaries on it — see `docs/results-guide.md` §4.1a and §8a.
 
 To merge a fleet launched any other way, or to redo a merge:
 

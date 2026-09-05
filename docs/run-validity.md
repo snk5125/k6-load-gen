@@ -125,7 +125,7 @@ not a measurement of the configured rate.
 ## Condition 4: fleet members disagree on configuration
 
 **Reason text:** `fleet members disagree on configuration: <field> differs ...`, where `<field>` is
-`generator.gen_count`, `run.active_types` or `resolved_config`. Fleet summaries only.
+`generator.gen_count`, `run.active_types`, `resolved_config` or `schedule`. Fleet summaries only.
 
 **What it means.** Every generator ran and reported, but they were not all running the same test.
 The merged counts are real events that were really sent — they just do not describe one
@@ -133,7 +133,11 @@ configuration, so the fleet's EPS, per-type breakdown and thresholds cannot be a
 profile named in `resolved_config` (which is the FIRST reporting generator's). Typical causes:
 the task definition was updated between launching two generators; one generator got a different
 `TYPES`, `<TYPE>_BATCH_SIZE` or profile through its overrides; a `merge` was run with a `--count`
-that does not match the `GEN_COUNT` the generators were launched with.
+that does not match the `GEN_COUNT` the generators were launched with. `schedule` can differ while
+`resolved_config` agrees: `DURATION_SCALE` and `GEN_COUNT` live in the environment, not the
+profile, and either one alone moves every stage boundary — so a `schedule` disagreement means the
+merged timeline's buckets mix stages and no per-stage figure describes a schedule any generator
+actually ran.
 
 Harder disagreements are not this condition: a differing `run_id` or `schema_version`, a summary
 whose `generator.gen_index` is not its directory index, a duplicate index, or an index outside the

@@ -1,6 +1,6 @@
 import exec from 'k6/execution';
 
-import { profileName, readOverrides, readTypeOverrides } from './config/env.ts';
+import { profileName, readOverrides, readTypeOverrides, startAt } from './config/env.ts';
 import { validateProfile, type Profile } from './config/schema.ts';
 import { resolveRun } from './config/resolve.ts';
 import { redactProfile } from './config/redact.ts';
@@ -64,6 +64,12 @@ function configWarn(line: string): void {
 for (const w of typeOverrides.warnings) configWarn(w);
 
 const run = resolveRun(profile, readOverrides(), typeOverrides);
+
+// When this generator was TOLD to start (bin/run.sh has already slept until
+// it by the time k6 runs). Read here, in init context, because handleSummary
+// executes in a fresh runtime where re-reading is fine but the value belongs
+// next to the rest of the resolved run. See RunSummary.run.start_at.
+const START_AT = startAt();
 
 // A profile entry on a validity metric is dropped by buildThresholds; say so.
 const thresholdWarnings = validityThresholdConflicts(run.profile.thresholds);
@@ -278,6 +284,11 @@ export function handleSummary(data: K6SummaryData) {
     gen_index: run.gen_index,
     gen_count: run.gen_count,
     rate: aggregateRate,
+    // What this run intended to offer, stage by stage — published so a
+    // timeline is read against the schedule that produced it rather than
+    // having its stage boundaries inferred from the delivered rate.
+    schedule: run.schedule,
+    start_at: START_AT,
     metrics: data.metrics,
     active_types: run.active_types,
     payload_sample: PAYLOAD_SAMPLE,

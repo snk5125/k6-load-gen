@@ -39,10 +39,15 @@ import { maxNullable } from './nullable.ts';
  *    measurement that never happened;
  *  - SOFT (validity.valid = false with a "fleet members disagree on
  *    configuration" reason, evidence still merged): generator.gen_count,
- *    run.active_types or resolved_config disagreement. The fleet ran and its
- *    numbers are real, they just do not describe one configuration.
- *    resolved_config is compared canonically (stableStringify), so key order
- *    never counts as a difference;
+ *    run.active_types, resolved_config or `schedule` disagreement. The fleet
+ *    ran and its numbers are real, they just do not describe one
+ *    configuration. `schedule` is checked separately from resolved_config
+ *    because DURATION_SCALE and GEN_COUNT live in the environment, not the
+ *    profile: two generators can agree on resolved_config and still run
+ *    different stage boundaries, which makes every per-stage reading of the
+ *    merged timeline describe a schedule neither generator ran. Both are
+ *    compared canonically (stableStringify), so key order never counts as a
+ *    difference;
  *  - WARNINGS only: k6_version, rate and thresholds.structural_count.
  */
 export interface GeneratorInput {
@@ -104,6 +109,18 @@ export interface FleetSummary extends Omit<RunSummary, 'generator'> {
     /** How many generators the merged timeline actually covers; null when the
      * caller merged summaries without saying anything about timelines. */
     timeline_coverage: TimelineCoverage | null;
+    /**
+     * max(started_at) - min(started_at) over the REPORTING generators, in
+     * seconds — how far apart the fleet actually began, after `START_AT` did
+     * whatever it could (see bin/run.sh). 0 on a fleet that started together;
+     * null when no generator reported a parseable start.
+     *
+     * It bounds how sharp any per-stage reading can be: the merged timeline
+     * sums generators whose stage boundaries are this many seconds apart, so
+     * a skew at or above the bucket width means a bucket somewhere holds two
+     * different stages and no bucket-level boundary is exact.
+     */
+    start_skew_sec: number | null;
     /** The fleet's verdict as a process exit code — see fleetExitCode. This
      * is the code bin/run.sh exits with in single-task fleet mode, and the
      * one a multi-task orchestrator should use after merging downloaded
@@ -174,10 +191,22 @@ const AGGREGATION: Record<string, string> = {
   'validity.valid': 'AND over reporting generators, AND every generator reported a summary',
   'run.started_at/ended_at': 'earliest start / latest end; duration_sec recomputed from them',
   'payload_sample': `round-robin across generators, capped at ${MAX_PAYLOAD_SAMPLE}`,
+  'schedule':
+    'taken from the first reporting generator; a disagreement is a configuration fault (validity.valid = false), ' +
+    'not something to merge',
+  'run.start_at':
+    'taken from the first reporting generator (every task is given the same START_AT); a disagreement is a warning',
+  'fleet.start_skew_sec':
+    'max(started_at) - min(started_at) over reporting generators; a skew at or above the timeline bucket width ' +
+    'means a bucket can hold two different stages',
   'fleet.timeline_coverage':
     'which reporting generators had a timeline.jsonl; the merged timeline is the SUM of those, so a missing ' +
     'generator makes every bucket under-count — read it before any per-stage conclusion',
 };
+
+/** bin/run.sh's TIMELINE_BUCKET_SEC default. Used to judge start skew when a
+ * merge has no timeline of its own to read a bucket width from. */
+export const DEFAULT_BUCKET_SEC = 15;
 
 type Values = Record<string, number>;
 
@@ -364,12 +393,17 @@ function entryFor(input: GeneratorInput): FleetGeneratorEntry {
  * @param timeline_events_sent  Σ events_sent over the MERGED timeline, when
  *   one was produced; compared against metrics.events_sent.count to catch a
  *   truncated timeline (a warning, never an error).
+ * @param bucket_sec  the merged timeline's bucket width, when one exists —
+ *   the yardstick `fleet.start_skew_sec` is judged against. Defaults to
+ *   DEFAULT_BUCKET_SEC, which is also bin/run.sh's TIMELINE_BUCKET_SEC
+ *   default, so a merge run without a timeline still judges skew sensibly.
  */
 export function mergeSummaries(
   inputs: GeneratorInput[],
   gen_count: number,
   timelines?: Record<number, boolean>,
   timeline_events_sent?: number | null,
+  bucket_sec?: number | null,
 ): FleetSummary {
   const sorted = [...inputs].sort((a, b) => a.gen_index - b.gen_index);
   // A subset merge — `fleet-cli merge out gen-0 gen-2` by hand, or a
@@ -450,6 +484,12 @@ export function mergeSummaries(
   };
   disagreesOn('run.active_types', (s) => [...s.run.active_types].sort(), true);
   disagreesOn('resolved_config', (s) => s.resolved_config, false);
+  // The schedule is what every per-stage reading is measured against, and it
+  // is NOT implied by resolved_config agreeing: DURATION_SCALE and GEN_COUNT
+  // are run-level environment, absent from the profile, and either one alone
+  // moves every stage boundary. Compared canonically (stableStringify), so
+  // key order is never a difference.
+  disagreesOn('schedule', (s) => s.schedule ?? null, false);
   const wrongCount = reporting.filter((r) => r.summary.generator.gen_count !== gen_count);
   if (wrongCount.length > 0) {
     configReasons.push(
@@ -460,6 +500,10 @@ export function mergeSummaries(
   }
 
   checkAgreement(reporting, 'run.k6_version', (s) => s.run.k6_version, warnings);
+  // A warning, not a fault: the fleet's numbers are still real, but a
+  // correlation aligned on run.start_at would be aligned on only one of the
+  // instants the generators were actually given.
+  checkAgreement(reporting, 'run.start_at', (s) => s.run.start_at ?? null, warnings);
   checkAgreement(reporting, 'rate', (s) => s.rate, warnings);
   checkAgreement(reporting, 'thresholds.structural_count', (s) => s.thresholds.structural_count, warnings);
 
@@ -470,6 +514,19 @@ export function mergeSummaries(
   const ended_at = ends.length ? new Date(Math.max(...ends)).toISOString() : first.run.ended_at;
   const span = Date.parse(ended_at) - Date.parse(started_at);
   const duration_sec = Number.isFinite(span) ? Math.round(span / 1000) : null;
+
+  // How far apart the fleet actually started. Measured over the REPORTING
+  // generators only — a generator that never wrote a summary has no start to
+  // be skewed from, and counting it as 0 would understate the spread.
+  const start_skew_sec = starts.length > 0 ? (Math.max(...starts) - Math.min(...starts)) / 1000 : null;
+  const skewYardstick = typeof bucket_sec === 'number' && bucket_sec > 0 ? bucket_sec : DEFAULT_BUCKET_SEC;
+  if (start_skew_sec !== null && start_skew_sec >= skewYardstick) {
+    warnings.push(
+      `fleet start skew ${start_skew_sec.toFixed(1)}s is at or above the timeline bucket width ` +
+        `(${skewYardstick}s): the generators were running different stages at the same wall-clock instant, ` +
+        `so a merged-timeline bucket can hold two stages and no per-stage boundary is exact`,
+    );
+  }
 
   // metrics
   const metricNames = new Set<string>();
@@ -597,10 +654,12 @@ export function mergeSummaries(
       duration_sec,
       k6_version: first.run.k6_version,
       active_types: first.run.active_types,
+      start_at: first.run.start_at ?? null,
     },
     resolved_config: first.resolved_config,
     generator: { gen_index: null, gen_count },
     rate: first.rate,
+    schedule: first.schedule ?? null,
     metrics,
     types: mergeTypes(reporting, warnings),
     thresholds: {
@@ -615,6 +674,7 @@ export function mergeSummaries(
       generator_count: gen_count,
       generators_reported: reporting.length,
       timeline_coverage,
+      start_skew_sec,
       exit_code: fleetExitCode(sorted),
       generators: sorted.map(entryFor),
       aggregation: { ...AGGREGATION },

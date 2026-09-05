@@ -58,7 +58,11 @@ export function mergeDirs(outDir: string, genDirs: string[]): string {
   const present: Record<number, boolean> = {};
   for (const r of read) present[r.input.gen_index] = r.timeline !== null;
   const mergedEventsSent = merged === null ? null : merged.reduce((a, b) => a + b.events_sent, 0);
-  const fleet = mergeSummaries(read.map((r) => r.input), genDirs.length, present, mergedEventsSent);
+  // The bucket width the merge judges `fleet.start_skew_sec` against — read
+  // from the timeline that actually exists rather than assumed, since
+  // TIMELINE_BUCKET_SEC is configurable per run.
+  const bucketSec = merged && merged.length > 0 ? merged[0].bucket_sec : null;
+  const fleet = mergeSummaries(read.map((r) => r.input), genDirs.length, present, mergedEventsSent, bucketSec);
   const report = renderFleetSummary(fleet);
 
   mkdirSync(outDir, { recursive: true });

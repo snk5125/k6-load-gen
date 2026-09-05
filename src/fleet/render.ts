@@ -25,6 +25,14 @@ export function renderFleetSummary(s: FleetSummary): string {
     `dropped iterations: ${s.validity.dropped_iterations}   <-- MUST be 0`,
   ];
 
+  // How far apart the fleet actually started: it bounds how sharp any
+  // per-stage reading can be, so it belongs beside the coverage line rather
+  // than buried in the per-generator table's timestamps.
+  const skew = s.fleet.start_skew_sec;
+  if (skew !== null) {
+    lines.push(`start skew        : ${n(skew)}s across generators`);
+  }
+
   // Coverage before any per-stage reading: the merged timeline is the sum of
   // the timelines that existed, so a missing generator silently under-counts.
   const cov = s.fleet.timeline_coverage;

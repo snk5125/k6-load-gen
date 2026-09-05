@@ -21,10 +21,21 @@ function gen(i: number, over: Partial<RunSummary> = {}, count = 2): RunSummary {
       duration_sec: 60,
       k6_version: 'v2.2.0',
       active_types: ['json-app'],
+      start_at: '2026-08-29T10:00:00.000Z',
     },
     resolved_config: { name: 'local-null', target: { transport: 'null' }, types: { 'json-app': { scenario: 'sweep' } } },
     generator: { gen_index: i, gen_count: count },
     rate: { requested_eps: 5000, achieved_eps: 5000, delta_pct: 0 },
+    schedule: {
+      'json-app': {
+        executor: 'ramping-arrival-rate',
+        duration_scale: 1,
+        gen_count: count,
+        batch_size: 100,
+        start_rate_per_sec: 1,
+        stages: [{ target_iterations_per_sec: 13, target_eps_fleet: 5200, duration_sec: 15 }],
+      },
+    },
     metrics: {
       events_attempted: { count: 1000 + i, rate: 16 },
       events_sent: { count: 1000, rate: 16 },
@@ -418,5 +429,119 @@ describe('mergeSummaries — integration of later work', () => {
     expect(f.fleet.generators.map((g) => [g.gen_index, g.summary_present])).toEqual([[0, true], [1, false], [2, true]]);
     expect(f.validity.valid).toBe(false);
     expect(f.validity.reasons.join(' ')).toMatch(/gen-1 produced no summary\.json/);
+  });
+});
+
+
+describe('mergeSummaries — schedule and start skew', () => {
+  it('carries the schedule and run.start_at through from a reporting generator', () => {
+    const f = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2);
+    expect(f.schedule?.['json-app'].stages).toEqual([
+      { target_iterations_per_sec: 13, target_eps_fleet: 5200, duration_sec: 15 },
+    ]);
+    expect(f.run.start_at).toBe('2026-08-29T10:00:00.000Z');
+  });
+
+  it('publishes null for both on generators that carry neither (older artifact)', () => {
+    const a = gen(0);
+    const b = gen(1);
+    a.schedule = null;
+    b.schedule = null;
+    a.run.start_at = null;
+    b.run.start_at = null;
+    const f = mergeSummaries([input(0, a), input(1, b)], 2);
+    expect(f.schedule).toBeNull();
+    expect(f.run.start_at).toBeNull();
+  });
+
+  it('marks the fleet INVALID when the members ran different schedules', () => {
+    const b = gen(1);
+    // Same profile, same resolved_config — only DURATION_SCALE differed, which
+    // lives in the environment and moves every stage boundary.
+    b.schedule = {
+      'json-app': {
+        executor: 'ramping-arrival-rate',
+        duration_scale: 0.5,
+        gen_count: 2,
+        batch_size: 100,
+        start_rate_per_sec: 1,
+        stages: [{ target_iterations_per_sec: 13, target_eps_fleet: 5200, duration_sec: 8 }],
+      },
+    };
+    const f = mergeSummaries([input(0, gen(0)), input(1, b)], 2);
+    expect(f.validity.valid).toBe(false);
+    expect(f.validity.reasons.join('\n')).toMatch(
+      /fleet members disagree on configuration: schedule differs on gen-1 from gen-0/,
+    );
+  });
+
+  it('does not call a schedule different for key order alone', () => {
+    const b = gen(1);
+    // Same content, keys written in a different order.
+    b.schedule = {
+      'json-app': {
+        stages: [{ duration_sec: 15, target_eps_fleet: 5200, target_iterations_per_sec: 13 }],
+        start_rate_per_sec: 1,
+        batch_size: 100,
+        gen_count: 2,
+        duration_scale: 1,
+        executor: 'ramping-arrival-rate',
+      },
+    };
+    const f = mergeSummaries([input(0, gen(0)), input(1, b)], 2);
+    expect(f.validity.valid).toBe(true);
+    expect(f.validity.reasons).toEqual([]);
+  });
+
+  it('warns — but does not invalidate — when the members were given different START_ATs', () => {
+    const b = gen(1);
+    b.run.start_at = '2026-08-29T10:05:00.000Z';
+    const f = mergeSummaries([input(0, gen(0)), input(1, b)], 2);
+    expect(f.validity.valid).toBe(true);
+    expect(f.warnings.join('\n')).toMatch(/generators disagree on run\.start_at/);
+  });
+
+  it('reports start skew as the spread of the reporting generators starts', () => {
+    // gen(i) starts at 10:00:0i, so a two-generator fleet is 1 s apart.
+    const f = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2);
+    expect(f.fleet.start_skew_sec).toBe(1);
+    // Well under the 15 s default bucket width: no warning.
+    expect(f.warnings.join('\n')).not.toMatch(/start skew/);
+  });
+
+  it('is 0 for a fleet whose generators started at the same instant', () => {
+    const b = gen(1);
+    b.run.started_at = gen(0).run.started_at;
+    const f = mergeSummaries([input(0, gen(0)), input(1, b)], 2);
+    expect(f.fleet.start_skew_sec).toBe(0);
+  });
+
+  it('ignores a generator that never reported when measuring skew', () => {
+    const f = mergeSummaries([input(0, gen(0)), input(1, null, 107)], 2);
+    expect(f.fleet.start_skew_sec).toBe(0);
+  });
+
+  it('warns when the skew reaches the timeline bucket width', () => {
+    const b = gen(1);
+    b.run.started_at = '2026-08-29T10:00:20.000Z'; // 20 s after gen-0
+    const f = mergeSummaries([input(0, gen(0)), input(1, b)], 2, { 0: true, 1: true }, null, 15);
+    expect(f.fleet.start_skew_sec).toBe(20);
+    expect(f.warnings.join('\n')).toMatch(
+      /fleet start skew 20\.0s is at or above the timeline bucket width \(15s\)/,
+    );
+  });
+
+  it('judges the skew against the timeline bucket width it was actually given', () => {
+    const b = gen(1);
+    b.run.started_at = '2026-08-29T10:00:20.000Z';
+    const f = mergeSummaries([input(0, gen(0)), input(1, b)], 2, { 0: true, 1: true }, null, 60);
+    expect(f.fleet.start_skew_sec).toBe(20);
+    expect(f.warnings.join('\n')).not.toMatch(/fleet start skew/);
+  });
+
+  it('names the rules for the new fields in fleet.aggregation', () => {
+    const f = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2);
+    expect(f.fleet.aggregation['schedule']).toMatch(/first reporting generator/);
+    expect(f.fleet.aggregation['fleet.start_skew_sec']).toMatch(/max\(started_at\)/);
   });
 });

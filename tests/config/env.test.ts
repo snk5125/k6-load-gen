@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { profileName, readOverrides, envPrefixFor, readTypeOverrides } from '../../src/config/env.ts';
+import { profileName, readOverrides, startAt, envPrefixFor, readTypeOverrides } from '../../src/config/env.ts';
 
 // env.ts reads k6's `__ENV` init-context global as a free variable. Under
 // vitest that resolves through globalThis, so the module is testable as-is by
@@ -191,5 +191,22 @@ describe('readTypeOverrides', () => {
     setEnv({ AUDITD_RATE: '5000' });
     const r = readTypeOverrides(['auditd']);
     expect(r.warnings).toEqual([]);
+  });
+});
+
+
+describe('startAt', () => {
+  it('returns START_AT verbatim, whatever form it was set in', () => {
+    setEnv({ START_AT: '2026-09-05T14:00:00Z' });
+    expect(startAt()).toBe('2026-09-05T14:00:00Z');
+    setEnv({ START_AT: '1788609600' });
+    expect(startAt()).toBe('1788609600');
+  });
+
+  it('is null when unset or empty — nothing scheduled this run', () => {
+    setEnv({});
+    expect(startAt()).toBeNull();
+    setEnv({ START_AT: '' });
+    expect(startAt()).toBeNull();
   });
 });

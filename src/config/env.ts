@@ -65,6 +65,25 @@ export function readOverrides(): Overrides {
   };
 }
 
+/**
+ * The scheduled start instant, as `START_AT` carries it — an ISO-8601 UTC
+ * timestamp or a bare Unix epoch in seconds (see bin/run.sh's `to_epoch`),
+ * or null when nothing scheduled this run.
+ *
+ * NOT used to configure the run: bin/run.sh has already slept until this
+ * instant by the time k6 starts. It is recorded in the summary so a
+ * correlation tool can align a fleet's stage boundaries on the instant every
+ * generator was TOLD to start, instead of on each generator's own observed
+ * start — which differ by exactly the placement skew START_AT exists to
+ * remove. Deliberately unvalidated here: an unparseable value is already
+ * logged and ignored by the wrapper, and publishing what was actually set
+ * tells a reader more than dropping it would.
+ */
+export function startAt(): string | null {
+  const v = __ENV.START_AT;
+  return v === undefined || v === '' ? null : v;
+}
+
 /** Uppercases and replaces hyphens: `nginx-access` -> `NGINX_ACCESS`. */
 export function envPrefixFor(typeName: string): string {
   return typeName.toUpperCase().replace(/-/g, '_');

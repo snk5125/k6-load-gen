@@ -27,6 +27,16 @@ The report answers, per load stage: what the generator offered and delivered,
 what the aggregator received (POSTs and records), what it dropped or errored,
 how busy each component was, and how much CPU the service used — the inputs
 to "where is the knee, and what CPU is it at".
+
+Stages come from the summary's own `schedule` block whenever it has one: the
+resolved k6 stages, in seconds and fleet-wide EPS, laid over the run's start
+reference (`run.start_at` when the fleet was scheduled with START_AT,
+otherwise the generators' own starts). That makes "eps offered" a fact read
+from the run's configuration rather than a guess, and it keeps the stage
+boundaries right on precisely the run worth analysing — one that FAILED to
+deliver what it offered. Only an artifact with no `schedule` (produced before
+that field existed) falls back to inferring boundaries from the delivered EPS,
+and every such report says so.
 """
 import argparse
 import datetime as dt
@@ -47,6 +57,25 @@ def iso(ts):
 
 def parse_iso(s):
     return dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+
+
+def parse_instant(v):
+    """An ISO-8601 timestamp OR a bare Unix epoch in seconds -> epoch float,
+    or None. Both forms occur: `started_at` is always ISO, while `start_at`
+    is START_AT exactly as it was set, and bin/run.sh accepts either."""
+    if v is None:
+        return None
+    t = str(v).strip()
+    if not t or t == "unknown":
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        pass
+    try:
+        return parse_iso(t)
+    except ValueError:
+        return None
 
 
 def aws(*args):
@@ -285,6 +314,182 @@ def cpu_in_window(points, t0, t1):
     return {"avg": sum(p["avg"] for p in xs) / len(xs), "max": max(p["max"] for p in xs)}
 
 
+DEFAULT_BUCKET_SEC = 15
+
+
+def start_reference(summary):
+    """Where the intended schedule starts, for THIS artifact.
+
+    `run.start_at` (the instant every generator was told to start, injected as
+    START_AT) wins when it is set: it is one instant shared by the whole fleet,
+    so one stage grid describes every generator. Without it the reference is
+    the earliest generator start — a fleet whose members began seconds apart
+    has no single true boundary, and `uncertainty_sec` says by how much.
+
+    Returns {"epoch", "source", "uncertainty_sec"} or None when the artifact
+    carries no usable start at all.
+
+    `uncertainty_sec` is deliberately NOT zero when aligning on `run.start_at`:
+    bin/run.sh sleeps until START_AT and k6 then takes its own time to
+    initialise, so the scheduled instant is an upper bound on how early any
+    generator's first stage began. It is the lateness of the last generator to
+    actually start, and it is what widens boundary marking below.
+    """
+    run = summary.get("run", {}) or {}
+    fleet = summary.get("fleet") or {}
+    starts = [parse_instant(g.get("started_at")) for g in fleet.get("generators", []) or []]
+    starts = [x for x in starts if x is not None]
+    if not starts:
+        one = parse_instant(run.get("started_at"))
+        starts = [one] if one is not None else []
+
+    scheduled = parse_instant(run.get("start_at"))
+    if scheduled is not None:
+        lag = (max(starts) - scheduled) if starts else 0.0
+        return {"epoch": scheduled, "source": "run.start_at (the scheduled instant every generator shared)",
+                "uncertainty_sec": max(0.0, lag)}
+    if not starts:
+        return None
+    source = "earliest fleet.generators[].started_at" if fleet.get("generators") else "run.started_at"
+    return {"epoch": min(starts), "source": source, "uncertainty_sec": max(starts) - min(starts)}
+
+
+def schedule_grid(schedule, active_types=None):
+    """The intended stage grid from a summary's `schedule` block.
+
+    Stages are PER TYPE (see docs/results-guide.md §3), while a timeline
+    bucket is not: it sums every type. So a single grid is only honest when
+    the active types' stage boundaries line up. Three cases, in the order they
+    are tried:
+
+      one type with stages          -> its stages, as-is;
+      several, identical durations  -> one grid, `target_eps_fleet` SUMMED
+                                       across the types (that is what the
+                                       fleet offered at that instant);
+      several, different durations  -> no grid. Returns a note saying so, and
+                                       the caller falls back to the delivered-
+                                       EPS heuristic rather than reporting
+                                       buckets against boundaries that only
+                                       one of the types actually ran.
+
+    Returns (stages, note): `stages` is a list of
+    {index, offset_start, offset_end, duration_sec, target_eps_fleet,
+     target_iterations_per_sec, types}, offsets in seconds from the run's start
+    reference; or (None, note) when no grid can be built.
+    """
+    if not schedule:
+        return None, None
+    names = sorted(schedule)
+    if active_types:
+        selected = [n for n in names if n in active_types]
+        if selected:
+            names = selected
+    with_stages = [n for n in names if schedule[n].get("stages")]
+    if not with_stages:
+        return None, ("the schedule declares no stages (a shared-iterations shape is a fixed unit of work, "
+                      "not a rate), so there are no stage boundaries to align to")
+
+    shapes = {n: tuple(round(float(st.get("duration_sec") or 0), 6) for st in schedule[n]["stages"])
+              for n in with_stages}
+    if len(set(shapes.values())) != 1:
+        detail = "; ".join(f"{n}: {len(shapes[n])} stages" for n in with_stages)
+        return None, ("stages are PER TYPE and the active types do not share stage boundaries "
+                      f"({detail}); a timeline bucket sums every type, so no single stage grid describes it")
+
+    ref = schedule[with_stages[0]]["stages"]
+    stages = []
+    t = 0.0
+    for i, st in enumerate(ref):
+        dur = float(st.get("duration_sec") or 0)
+        stages.append({
+            "index": i,
+            "offset_start": t,
+            "offset_end": t + dur,
+            "duration_sec": dur,
+            "target_eps_fleet": sum(float(schedule[n]["stages"][i].get("target_eps_fleet") or 0) for n in with_stages),
+            "target_iterations_per_sec": sum(
+                float(schedule[n]["stages"][i].get("target_iterations_per_sec") or 0) for n in with_stages),
+            "types": list(with_stages),
+        })
+        t += dur
+    note = None
+    if len(with_stages) > 1:
+        note = ("stages are per type; these types share identical stage boundaries, so 'eps offered' is their SUM ("
+                + ", ".join(with_stages) + ")")
+    return stages, note
+
+
+def assign_buckets(buckets, stages, ref_epoch, uncertainty_sec=0.0):
+    """Assign each timeline bucket to the intended stage containing its START.
+
+    k6 ramps LINEARLY inside a stage, so a bucket cannot be labelled ramp or
+    hold from the schedule — only which stage it belongs to. A bucket whose own
+    span crosses a stage boundary is flagged `boundary: True`: it holds two
+    different offered rates, so its delivered EPS belongs to neither stage
+    cleanly. The crossing test is widened by `uncertainty_sec` (how far apart
+    the generators actually started, or how late they were against START_AT),
+    because the boundary is only known to that precision.
+
+    A bucket before the first stage or after the last gets `stage: None` and is
+    always flagged — it is outside the schedule, not part of any stage.
+
+    Returns a list of {"bucket", "stage", "boundary"} in the input order.
+    """
+    edges = []
+    for st in stages:
+        edges.append(st["offset_start"])
+        edges.append(st["offset_end"])
+    out = []
+    for b in buckets:
+        start = parse_instant(b.get("bucket_start"))
+        if start is None:
+            out.append({"bucket": b, "stage": None, "boundary": True})
+            continue
+        t = start - ref_epoch
+        width = float(b.get("bucket_sec") or DEFAULT_BUCKET_SEC)
+        end = t + width
+        idx = None
+        for st in stages:
+            if st["offset_start"] <= t < st["offset_end"]:
+                idx = st["index"]
+                break
+        boundary = idx is None or any(t - uncertainty_sec < e < end + uncertainty_sec for e in edges)
+        out.append({"bucket": b, "stage": idx, "boundary": boundary})
+    return out
+
+
+def stages_from_schedule(buckets, stages, ref_epoch, uncertainty_sec=0.0):
+    """Group the timeline's buckets by the intended stage they fall in.
+
+    Buckets are in time order and the assignment is monotonic in time, so
+    grouping consecutive runs of the same stage index yields one group per
+    stage, plus a leading/trailing group with `stage: None` for whatever fell
+    outside the schedule (a generator that overran, or a timeline that starts
+    before the reference).
+
+    Each group carries what the schedule INTENDED for it — `eps_offered`
+    (target_eps_fleet) and `intended_seconds` — beside the buckets that will
+    supply what was delivered.
+    """
+    by_index = {st["index"]: st for st in stages}
+    groups = []
+    for a in assign_buckets(buckets, stages, ref_epoch, uncertainty_sec):
+        if not groups or groups[-1]["stage"] != a["stage"]:
+            st = by_index.get(a["stage"])
+            groups.append({
+                "stage": a["stage"],
+                "buckets": [],
+                "boundary_buckets": 0,
+                "eps_offered": st["target_eps_fleet"] if st else None,
+                "target_iterations_per_sec": st["target_iterations_per_sec"] if st else None,
+                "intended_seconds": st["duration_sec"] if st else None,
+            })
+        groups[-1]["buckets"].append(a["bucket"])
+        if a["boundary"]:
+            groups[-1]["boundary_buckets"] += 1
+    return groups
+
+
 def stages_from_buckets(buckets):
     """Group consecutive buckets whose eps stays within 15% into stages."""
     stages = []
@@ -365,6 +570,38 @@ def coverage_note(cov):
             f"(missing {missing}); the fleet timeline under-counts, so per-stage figures are partial and no knee verdict is given")
 
 
+def alignment_lines(a):
+    """How the stage rows were produced, in words, for the top of the report.
+
+    Always says which of the two it was: an intended grid read from the run's
+    own `schedule`, or the delivered-EPS heuristic that predates it. A reader
+    must never have to guess whether "stage 3" is a fact or an inference.
+    """
+    if not a:
+        return []
+    if a.get("stages_from") == "schedule":
+        out = [
+            "stage boundaries come from the run's resolved `schedule` (intended stages), laid over "
+            f"{a.get('reference')} from {a.get('reference_source')}; 'eps offered' is that stage's "
+            "target_eps_fleet. k6 ramps LINEARLY within a stage, so a bucket carries its stage index, "
+            "never a ramp/hold label",
+        ]
+        unc = a.get("uncertainty_sec") or 0
+        out.append(
+            f"boundary precision: ±{unc:.1f}s (generators did not all start on the reference instant); "
+            "the 'sched' column marks a stage's straddling buckets as '(+Nb)' — those buckets hold two "
+            "offered rates, so their delivered eps belongs cleanly to neither stage"
+        )
+        if a.get("note"):
+            out.append(a["note"])
+        return out
+    if a.get("stages_from") == "heuristic":
+        why = a.get("note") or "no schedule was available"
+        return [f"stage boundaries inferred from delivered EPS (heuristic; older artifact) — {why}. "
+                "'eps offered' is unknown, and a run that failed to keep up will have its stages mislabelled"]
+    return []
+
+
 def knee_verdict(stages):
     """First stage where p99 or failure_rate breaks away from the first two stages."""
     base = [s for s in stages[:2] if s["generator"]["send_p99_ms_median"] is not None]
@@ -395,7 +632,44 @@ def cmd_report(a):
     t1 = parse_iso(summary["run"]["ended_at"])
     cw = cloudwatch_cpu(a.cw_cluster, a.cw_service, t0 or t1 - 3600, t1) if a.cw_cluster and a.cw_service else None
 
-    stages = [summarize_stage(st, rows, comps, cw, batch_size) for st in stages_from_buckets(buckets)] if buckets else []
+    # Stage boundaries: from the run's own schedule when it published one,
+    # else inferred from the delivered EPS (the pre-`schedule` heuristic, which
+    # mislabels exactly the runs that failed to keep up).
+    ref = start_reference(summary)
+    grid, grid_note = schedule_grid(summary.get("schedule"), summary["run"].get("active_types"))
+    if buckets and grid and ref:
+        groups = stages_from_schedule(buckets, grid, ref["epoch"], ref["uncertainty_sec"])
+        stages_from = "schedule"
+    elif buckets:
+        groups = stages_from_buckets(buckets)
+        stages_from = "heuristic"
+        if grid and not ref:
+            grid_note = "the artifact carries a schedule but no usable start time to lay it over"
+        elif not summary.get("schedule"):
+            grid_note = "this artifact predates the `schedule` field"
+    else:
+        groups = []
+        stages_from = "none"
+
+    stages = []
+    for g in groups:
+        st = summarize_stage(g, rows, comps, cw, batch_size)
+        st["stage"] = g.get("stage")
+        st["eps_offered"] = g.get("eps_offered")
+        st["target_iterations_per_sec"] = g.get("target_iterations_per_sec")
+        st["intended_seconds"] = g.get("intended_seconds")
+        st["boundary_buckets"] = g.get("boundary_buckets")
+        stages.append(st)
+
+    alignment = {
+        "stages_from": stages_from,
+        "reference": iso(ref["epoch"]) if ref else None,
+        "reference_source": ref["source"] if ref else None,
+        "uncertainty_sec": ref["uncertainty_sec"] if ref else None,
+        "note": grid_note,
+        "start_at": summary["run"].get("start_at"),
+        "start_skew_sec": (summary.get("fleet") or {}).get("start_skew_sec"),
+    }
     fleet = summary.get("fleet")
     report = {
         "run": {"run_id": summary["run"]["run_id"], "started_at": summary["run"].get("started_at"), "ended_at": summary["run"]["ended_at"],
@@ -415,6 +689,7 @@ def cmd_report(a):
         "warnings": summary.get("warnings", []),
         "stages": stages,
         "knee": knee_verdict(stages) if stages else None,
+        "alignment": alignment,
         "timeline_coverage": (fleet or {}).get("timeline_coverage"),
         "scrapes": {"file": a.metrics, "count": len(rows), "first": iso(rows[0]["ts"]) if rows else None, "last": iso(rows[-1]["ts"]) if rows else None},
         "cloudwatch": {"cluster": a.cw_cluster, "service": a.cw_service, "points": len(cw) if cw else 0},
@@ -459,16 +734,22 @@ def render(r):
     if note:
         L.append(f"- {note}")
     L.append(f"- scrapes: {r['scrapes']['count']} from {r['scrapes']['first']} to {r['scrapes']['last']}; cloudwatch points: {r['cloudwatch']['points']}")
+    for line in alignment_lines(r.get("alignment")):
+        L.append(f"- {line}")
     L.append("")
     if r["stages"]:
-        L.append("| stage | start (UTC) | s | eps delivered | p99 ms (med/max) | fail rate | dropped | src recv | src/s | records recv | rec errors | rec util | sink sent | buf events | cpu avg/max % |")
-        L.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        L.append("| stage | sched | eps offered | start (UTC) | s | eps delivered | p99 ms (med/max) | fail rate | dropped | src recv | src/s | records recv | rec errors | rec util | sink sent | buf events | cpu avg/max % |")
+        L.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for i, s in enumerate(r["stages"]):
             g, ag = s["generator"], s["aggregator"]
             src, rec, sink = ag.get("source", {}), ag.get("records", {}), ag.get("sink", {})
             cpu = s.get("service_cpu_pct") or {}
-            L.append("| {} | {} | {} | {} | {}/{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {}/{} |".format(
-                i, s["start"][11:19], fmt(s["seconds"], 0), fmt(g["eps_delivered"], 0), fmt(g["send_p99_ms_median"]), fmt(g["send_p99_ms_max"]),
+            sched = "-" if s.get("stage") is None else str(s["stage"])
+            if s.get("boundary_buckets"):
+                sched += f" (+{s['boundary_buckets']}b)"
+            L.append("| {} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {}/{} |".format(
+                i, sched, fmt(s.get("eps_offered"), 0), s["start"][11:19], fmt(s["seconds"], 0), fmt(g["eps_delivered"], 0),
+                fmt(g["send_p99_ms_median"]), fmt(g["send_p99_ms_max"]),
                 fmt(g["failure_rate"], 4), g["dropped_iterations"], fmt(src.get("received"), 0), fmt(src.get("received_per_sec"), 0),
                 fmt(rec.get("received"), 0), fmt(rec.get("errors"), 0), fmt(rec.get("utilization"), 2), fmt(sink.get("sent"), 0),
                 fmt(sink.get("buffer_events"), 0), fmt(cpu.get("avg")), fmt(cpu.get("max"))))

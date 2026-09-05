@@ -6,10 +6,11 @@ import type { RunSummary } from '../../src/summary/build.ts';
 function gen(i: number, over: Partial<RunSummary> = {}): RunSummary {
   return {
     schema_version: 2,
-    run: { run_id: 'fleet-1', started_at: '2026-08-29T10:00:00.000Z', ended_at: '2026-08-29T10:01:00.000Z', duration_sec: 60, k6_version: 'v2.2.0', active_types: ['json-app'] },
+    run: { run_id: 'fleet-1', started_at: '2026-08-29T10:00:00.000Z', ended_at: '2026-08-29T10:01:00.000Z', duration_sec: 60, k6_version: 'v2.2.0', active_types: ['json-app'], start_at: null },
     resolved_config: { name: 'local-null' },
     generator: { gen_index: i, gen_count: 2 },
     rate: { requested_eps: 5000, achieved_eps: 5000, delta_pct: 0 },
+    schedule: null,
     metrics: {
       events_attempted: { count: 1000 }, events_sent: { count: 1000 },
       send_failures: { rate: 0, passes: 0, fails: 10 },
@@ -78,5 +79,21 @@ describe('renderFleetSummary — timeline coverage', () => {
 
   it('says timelines were off rather than missing when no generator had one', () => {
     expect(renderFleetSummary(two({ 0: false, 1: false }))).toMatch(/timeline coverage\s+: none \(timeline emission off\)/);
+  });
+});
+
+
+describe('renderFleetSummary — start skew', () => {
+  it('prints the skew line above timeline coverage', () => {
+    const b = gen(1);
+    b.run.started_at = '2026-08-29T10:00:04.000Z';
+    const f = mergeSummaries(
+      [
+        { gen_index: 0, exit_code: 0, summary: gen(0) },
+        { gen_index: 1, exit_code: 0, summary: b },
+      ],
+      2,
+    );
+    expect(renderFleetSummary(f)).toMatch(/start skew\s+: 4\.0s across generators/);
   });
 });

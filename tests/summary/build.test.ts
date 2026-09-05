@@ -363,3 +363,33 @@ describe('renderSummary', () => {
     expect(out).toMatch(/dropped 3 iterations/i);
   });
 });
+
+
+describe('buildSummary — schedule and start_at', () => {
+  it('publishes null for both when the caller supplies neither', () => {
+    const s = buildSummary(input(k6Metrics()));
+    expect(s.schedule).toBeNull();
+    expect(s.run.start_at).toBeNull();
+    expect(s.schema_version).toBe(2);
+  });
+
+  it('carries the resolved schedule and START_AT through unchanged', () => {
+    const schedule = {
+      'json-app': {
+        executor: 'ramping-arrival-rate',
+        duration_scale: 1,
+        gen_count: 2,
+        batch_size: 100,
+        start_rate_per_sec: 1,
+        stages: [{ target_iterations_per_sec: 13, target_eps_fleet: 2600, duration_sec: 15 }],
+      },
+    };
+    const s = buildSummary({
+      ...input(k6Metrics()),
+      schedule,
+      start_at: '2026-08-29T09:59:00Z',
+    });
+    expect(s.schedule).toEqual(schedule);
+    expect(s.run.start_at).toBe('2026-08-29T09:59:00Z');
+  });
+});

@@ -71,7 +71,7 @@ exit 0
 const summary = (i: number, count: number, sent: number, ok = true) =>
   JSON.stringify({
     schema_version: 2,
-    run: { run_id: 'f1', started_at: '2026-08-29T10:00:00.000Z', ended_at: '2026-08-29T10:01:00.000Z', duration_sec: 60, k6_version: 'v2.2.0', active_types: ['json-app'] },
+    run: { run_id: 'f1', started_at: '2026-08-29T10:00:00.000Z', ended_at: '2026-08-29T10:01:00.000Z', duration_sec: 60, k6_version: 'v2.2.0', active_types: ['json-app'], start_at: null },
     resolved_config: { name: 'hec', target: { transport: 'hec' }, types: { 'json-app': { scenario: 'sweep' } } },
     generator: { gen_index: i, gen_count: count },
     rate: { requested_eps: 100, achieved_eps: 100, delta_pct: 0 },

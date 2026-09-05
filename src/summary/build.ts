@@ -1,4 +1,5 @@
 import { VALIDITY_THRESHOLDS, STRUCTURAL_EXPRESSIONS, isStructuralThreshold } from '../metrics/thresholds.ts';
+import type { RunSchedule } from '../scenarios/schedule.ts';
 
 // Bumped from 1: `thresholds` changed shape from a flat map of every
 // declared threshold to `{ slo: [...], structural_count }`, and `run` grew
@@ -91,6 +92,19 @@ export interface RunSummary {
      * see resolveRun.active_types. Distinguishes a TYPES=-subsetted run from
      * a full one when resolved_config still lists every declared type. */
     active_types: string[];
+    /**
+     * The instant this generator was SCHEDULED to start — `START_AT`, exactly
+     * as it was set (ISO-8601 UTC or a bare Unix epoch in seconds), or null
+     * when nothing scheduled the run.
+     *
+     * `started_at` is when k6 actually began; `start_at` is when it was told
+     * to. On a fleet they differ by the placement skew (`fleet.start_skew_sec`),
+     * so a stage boundary computed from `started_at` lands at a different
+     * instant on every generator while the one computed from `start_at` is
+     * shared. tools/correlate_run.py prefers this field for exactly that
+     * reason. Additive: schema_version stays 2.
+     */
+    start_at: string | null;
   };
   resolved_config: unknown;
   generator: { gen_index: number; gen_count: number };
@@ -102,6 +116,18 @@ export interface RunSummary {
    * multiplier). See ResolvedScenario.delta_pct in src/scenarios/resolve.ts.
    */
   rate: { requested_eps: number; achieved_eps: number; delta_pct: number };
+  /**
+   * What the run INTENDED to offer, per active type: the resolved k6 stages
+   * restated as target iterations/s, fleet-wide EPS and seconds. See
+   * src/scenarios/schedule.ts. `rate` covers the peak stage only; this covers
+   * every stage and how long each one lasts, which is what makes a timeline
+   * readable without guessing stage boundaries from the delivered rate.
+   *
+   * null on an artifact produced before this field existed — a consumer must
+   * treat its absence as "unknown", not as "no stages". Additive:
+   * schema_version stays 2.
+   */
+  schedule: RunSchedule | null;
   metrics: Record<string, Record<string, number>>;
   /** Per active type, the same STRUCTURAL_EXPRESSIONS metrics broken out
    * from their tagged sub-metrics. Empty when no active_types were supplied. */
@@ -146,6 +172,12 @@ export interface BuildSummaryInput {
    * a single-type/legacy caller sees an empty per-type breakdown rather than
    * being forced to pass this. See resolveRun.active_types. */
   active_types?: string[];
+  /** `START_AT` as it was set, or null/absent when nothing scheduled the run.
+   * See RunSummary.run.start_at. */
+  start_at?: string | null;
+  /** The resolved schedule (resolveRun.schedule). Optional: omitting it
+   * publishes `schedule: null`, the same thing a pre-schedule artifact says. */
+  schedule?: RunSchedule;
 }
 
 interface K6Metric {
@@ -294,10 +326,12 @@ export function buildSummary(input: BuildSummaryInput): RunSummary {
       duration_sec,
       k6_version: input.k6_version,
       active_types: activeTypes,
+      start_at: input.start_at ?? null,
     },
     resolved_config: input.resolved_config,
     generator: { gen_index: input.gen_index, gen_count: input.gen_count },
     rate: input.rate,
+    schedule: input.schedule ?? null,
     metrics,
     types,
     thresholds: { slo, structural_count: structuralCount },

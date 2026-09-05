@@ -336,3 +336,71 @@ describe('resolveRun — override errors name the offending value (follow-up)', 
     ).toThrow(/\(got 2\.5\)/);
   });
 });
+
+
+describe('resolveRun — schedule', () => {
+  it('publishes one entry per ACTIVE type only', () => {
+    const p = profile();
+    p.types.cloudtrail = { batch_size: 50, anchor: { mode: 'absolute', base_eps: 500 }, scenario: 'plateau' };
+    const r = resolveRun(p, { run_id: 'r' }, { active: ['auditd'], overrides: {} });
+    expect(Object.keys(r.schedule)).toEqual(['auditd']);
+  });
+
+  it('states the sweep stages as targets, fleet eps and seconds', () => {
+    const p = profile();
+    const r = resolveRun(p, { run_id: 'r', gen_count: 4, gen_index: 1 }, noOverrides(p));
+    const s = r.schedule.auditd;
+    expect(s.executor).toBe('ramping-arrival-rate');
+    expect(s.gen_count).toBe(4);
+    expect(s.batch_size).toBe(100);
+    expect(s.duration_scale).toBe(1);
+    // 7 multipliers x (ramp, hold).
+    expect(s.stages).toHaveLength(14);
+    // knee 5000 at 1.0x: 5000/4 gens = 1250 eps -> 13 it/s -> 13*100*4 = 5200.
+    expect(s.stages[8]).toEqual({
+      target_iterations_per_sec: 13,
+      target_eps_fleet: 5200,
+      duration_sec: 15,
+    });
+    expect(s.stages[9].duration_sec).toBe(165);
+  });
+
+  it('carries DURATION_SCALE into the stage seconds', () => {
+    const p = profile();
+    const r = resolveRun(p, { run_id: 'r', duration_scale: 0.2 }, noOverrides(p));
+    expect(r.schedule.auditd.duration_scale).toBe(0.2);
+    expect(r.schedule.auditd.stages[0].duration_sec).toBe(3);
+    expect(r.schedule.auditd.stages[1].duration_sec).toBe(33);
+  });
+
+  it('reflects a per-type override rather than the profile it started from', () => {
+    const p = profile();
+    const r = resolveRun(p, { run_id: 'r' }, {
+      active: ['auditd'],
+      overrides: { auditd: { rate: 1000, scenario: 'plateau', batch_size: 10 } },
+    });
+    const s = r.schedule.auditd;
+    expect(s.batch_size).toBe(10);
+    // plateau is one 2.0x stage of 900 s: 2000 eps / batch 10 = 200 it/s.
+    expect(s.stages).toEqual([
+      { target_iterations_per_sec: 200, target_eps_fleet: 2000, duration_sec: 900 },
+    ]);
+  });
+
+  it('records iterations and vus, and no stages, for a shared-iterations shape', () => {
+    const p = profile();
+    const r = resolveRun(p, { run_id: 'r' }, {
+      active: ['auditd'],
+      overrides: { auditd: { scenario: 'smoke' } },
+    });
+    expect(r.schedule.auditd).toEqual({
+      executor: 'shared-iterations',
+      duration_scale: 1,
+      gen_count: 1,
+      batch_size: 100,
+      iterations: 20,
+      vus: 1,
+      stages: [],
+    });
+  });
+});

@@ -2,6 +2,7 @@ import type { Profile, TypeConfig } from './schema.ts';
 import type { TypeOverride } from './env.ts';
 import { SHAPE_NAMES, SHAPES, type ShapeName } from '../scenarios/shapes.ts';
 import { resolveScenario, type Anchor } from '../scenarios/resolve.ts';
+import { scheduleForType, type RunSchedule } from '../scenarios/schedule.ts';
 import { getLogType } from '../logtypes/registry.ts';
 import type { FieldSpec, PayloadSpec } from '../payload/types.ts';
 
@@ -57,6 +58,14 @@ export interface ResolvedRun {
   active_types: string[];
   /** One resolved entry per active type, keyed by type name. */
   types: Record<string, TypeRun>;
+  /**
+   * What this run intends to offer, per active type: the k6 stages restated
+   * as target iterations/s, fleet-wide EPS and seconds — see
+   * src/scenarios/schedule.ts. Published in the summary so a timeline can be
+   * read against the schedule that produced it instead of having its stage
+   * boundaries guessed from the delivered rate.
+   */
+  schedule: RunSchedule;
 }
 
 /**
@@ -130,6 +139,7 @@ export function resolveRun(
   }
 
   const types: Record<string, TypeRun> = {};
+  const schedule: RunSchedule = {};
   // A copy of profile.types with each active type's TypeConfig replaced by
   // what actually ran (post-override) — this is what lands in run.profile,
   // which handleSummary publishes as resolved_config. Without this, a run
@@ -205,6 +215,11 @@ export function resolveRun(
       abort_on_fail: resolved.abort_on_fail,
       warnings: resolved.warnings,
     };
+    schedule[typeName] = scheduleForType(resolved.k6, {
+      batch_size: batchSize,
+      gen_count,
+      duration_scale,
+    });
     mergedTypes[typeName] = {
       ...tc,
       batch_size: batchSize,
@@ -223,5 +238,6 @@ export function resolveRun(
     duration_scale,
     active_types: typeOverrides.active,
     types,
+    schedule,
   };
 }

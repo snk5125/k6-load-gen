@@ -174,9 +174,6 @@ class ComponentDeltaTests(unittest.TestCase):
         self.assertEqual(d["received"], 10.0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class CoverageNoteTests(unittest.TestCase):
     def test_no_note_for_complete_off_or_absent(self):
@@ -192,3 +189,233 @@ class CoverageNoteTests(unittest.TestCase):
         self.assertIn("2/3", note)
         self.assertIn("gen-1", note)
         self.assertIn("no knee verdict", note)
+
+
+# ---------------------------------------------------------------- schedule alignment
+
+def bucket(start_iso, bucket_sec=15, eps=100.0):
+    """One timeline bucket, only the fields the stage grid touches."""
+    return {"bucket_start": start_iso, "bucket_sec": bucket_sec, "eps": eps,
+            "events_sent": eps * bucket_sec, "events_attempted": eps * bucket_sec,
+            "send_failures": 0, "send_samples": 10, "failure_rate": 0.0,
+            "send_duration_p50": 1, "send_duration_p95": 2, "send_duration_p99": 3,
+            "dropped_iterations": 0}
+
+
+# A two-stage schedule: 30 s at 1000 eps, then 60 s at 4000 eps.
+SCHEDULE = {
+    "json-app": {
+        "executor": "ramping-arrival-rate",
+        "duration_scale": 1,
+        "gen_count": 2,
+        "batch_size": 100,
+        "start_rate_per_sec": 5,
+        "stages": [
+            {"target_iterations_per_sec": 5, "target_eps_fleet": 1000, "duration_sec": 30},
+            {"target_iterations_per_sec": 20, "target_eps_fleet": 4000, "duration_sec": 60},
+        ],
+    }
+}
+
+REF = "2026-09-05T14:00:00Z"
+REF_EPOCH = cr.parse_iso(REF)
+
+
+class ParseInstantTests(unittest.TestCase):
+    def test_reads_both_forms_start_at_accepts(self):
+        self.assertEqual(cr.parse_instant("2026-09-05T14:00:00Z"), REF_EPOCH)
+        self.assertEqual(cr.parse_instant(str(int(REF_EPOCH))), REF_EPOCH)
+
+    def test_none_for_absent_unknown_or_unparseable(self):
+        self.assertIsNone(cr.parse_instant(None))
+        self.assertIsNone(cr.parse_instant(""))
+        self.assertIsNone(cr.parse_instant("unknown"))
+        self.assertIsNone(cr.parse_instant("next tuesday"))
+
+
+class StartReferenceTests(unittest.TestCase):
+    def test_run_start_at_wins_and_carries_the_lateness_as_uncertainty(self):
+        summary = {
+            "run": {"started_at": "2026-09-05T14:00:03Z", "start_at": REF},
+            "fleet": {"generators": [
+                {"started_at": "2026-09-05T14:00:02Z"},
+                {"started_at": "2026-09-05T14:00:05Z"},
+            ]},
+        }
+        ref = cr.start_reference(summary)
+        self.assertEqual(ref["epoch"], REF_EPOCH)
+        self.assertIn("run.start_at", ref["source"])
+        # The last generator was 5 s late against the instant it was given.
+        self.assertEqual(ref["uncertainty_sec"], 5.0)
+
+    def test_without_start_at_a_fleet_uses_its_earliest_generator_start(self):
+        summary = {
+            "run": {"started_at": "2026-09-05T14:00:05Z", "start_at": None},
+            "fleet": {"generators": [
+                {"started_at": "2026-09-05T14:00:02Z"},
+                {"started_at": "2026-09-05T14:00:06Z"},
+            ]},
+        }
+        ref = cr.start_reference(summary)
+        self.assertEqual(ref["epoch"], cr.parse_iso("2026-09-05T14:00:02Z"))
+        self.assertIn("fleet.generators", ref["source"])
+        self.assertEqual(ref["uncertainty_sec"], 4.0)
+
+    def test_single_generator_falls_back_to_run_started_at(self):
+        ref = cr.start_reference({"run": {"started_at": REF, "start_at": None}})
+        self.assertEqual(ref["epoch"], REF_EPOCH)
+        self.assertEqual(ref["source"], "run.started_at")
+        self.assertEqual(ref["uncertainty_sec"], 0.0)
+
+    def test_none_when_nothing_usable(self):
+        self.assertIsNone(cr.start_reference({"run": {"started_at": "unknown"}}))
+
+
+class ScheduleGridTests(unittest.TestCase):
+    def test_single_type_grid_accumulates_offsets(self):
+        stages, note = cr.schedule_grid(SCHEDULE, ["json-app"])
+        self.assertIsNone(note)
+        self.assertEqual([(s["offset_start"], s["offset_end"]) for s in stages], [(0.0, 30.0), (30.0, 90.0)])
+        self.assertEqual([s["target_eps_fleet"] for s in stages], [1000.0, 4000.0])
+
+    def test_absent_schedule_gives_no_grid_and_no_note(self):
+        self.assertEqual(cr.schedule_grid(None), (None, None))
+        self.assertEqual(cr.schedule_grid({}), (None, None))
+
+    def test_shared_iterations_schedule_says_there_are_no_stages(self):
+        stages, note = cr.schedule_grid({"json-app": {"executor": "shared-iterations", "iterations": 20, "vus": 1, "stages": []}})
+        self.assertIsNone(stages)
+        self.assertIn("no stages", note)
+
+    def test_two_types_with_identical_boundaries_sum_the_offered_eps(self):
+        two = {
+            "json-app": SCHEDULE["json-app"],
+            "auditd": {"executor": "ramping-arrival-rate", "duration_scale": 1, "gen_count": 2, "batch_size": 50,
+                       "stages": [
+                           {"target_iterations_per_sec": 2, "target_eps_fleet": 200, "duration_sec": 30},
+                           {"target_iterations_per_sec": 8, "target_eps_fleet": 800, "duration_sec": 60},
+                       ]},
+        }
+        stages, note = cr.schedule_grid(two)
+        self.assertEqual([s["target_eps_fleet"] for s in stages], [1200.0, 4800.0])
+        self.assertIn("SUM", note)
+        self.assertEqual(stages[0]["types"], ["auditd", "json-app"])
+
+    def test_two_types_with_different_boundaries_give_no_grid(self):
+        two = {
+            "json-app": SCHEDULE["json-app"],
+            "auditd": {"executor": "ramping-arrival-rate", "duration_scale": 1, "gen_count": 2, "batch_size": 50,
+                       "stages": [{"target_iterations_per_sec": 2, "target_eps_fleet": 200, "duration_sec": 90}]},
+        }
+        stages, note = cr.schedule_grid(two)
+        self.assertIsNone(stages)
+        self.assertIn("PER TYPE", note)
+        self.assertIn("no single stage grid", note)
+
+    def test_active_types_narrow_a_multi_type_schedule_to_one_grid(self):
+        two = {
+            "json-app": SCHEDULE["json-app"],
+            "auditd": {"executor": "ramping-arrival-rate", "duration_scale": 1, "gen_count": 2, "batch_size": 50,
+                       "stages": [{"target_iterations_per_sec": 2, "target_eps_fleet": 200, "duration_sec": 90}]},
+        }
+        stages, note = cr.schedule_grid(two, ["json-app"])
+        self.assertIsNotNone(stages)
+        self.assertEqual(len(stages), 2)
+        self.assertIsNone(note)
+
+
+class AssignBucketsTests(unittest.TestCase):
+    def setUp(self):
+        self.stages, _ = cr.schedule_grid(SCHEDULE)
+
+    def test_each_bucket_lands_in_the_stage_containing_its_start(self):
+        buckets = [bucket("2026-09-05T14:00:00Z"), bucket("2026-09-05T14:00:15Z"),
+                   bucket("2026-09-05T14:00:30Z"), bucket("2026-09-05T14:01:15Z")]
+        a = cr.assign_buckets(buckets, self.stages, REF_EPOCH)
+        self.assertEqual([x["stage"] for x in a], [0, 0, 1, 1])
+
+    def test_aligned_buckets_do_not_straddle_a_boundary(self):
+        # 15 s buckets against a 30 s stage: every edge falls between buckets.
+        buckets = [bucket("2026-09-05T14:00:00Z"), bucket("2026-09-05T14:00:15Z"),
+                   bucket("2026-09-05T14:00:30Z")]
+        a = cr.assign_buckets(buckets, self.stages, REF_EPOCH)
+        self.assertEqual([x["boundary"] for x in a], [False, False, False])
+
+    def test_a_bucket_spanning_a_stage_edge_is_flagged(self):
+        # The run started 7 s before the bucket grid's tick, so the 30 s stage
+        # boundary falls INSIDE the 14:00:22 bucket (offsets 22..37).
+        buckets = [bucket("2026-09-05T14:00:22Z")]
+        a = cr.assign_buckets(buckets, self.stages, REF_EPOCH)
+        self.assertEqual(a[0]["stage"], 0)
+        self.assertTrue(a[0]["boundary"])
+
+    def test_uncertainty_widens_the_boundary_marking(self):
+        # Bucket 14:00:15..14:00:30 does not cross the edge at 30 exactly, but a
+        # 3 s uncertainty in the reference means it might have.
+        buckets = [bucket("2026-09-05T14:00:15Z")]
+        self.assertFalse(cr.assign_buckets(buckets, self.stages, REF_EPOCH)[0]["boundary"])
+        self.assertTrue(cr.assign_buckets(buckets, self.stages, REF_EPOCH, 3.0)[0]["boundary"])
+
+    def test_buckets_outside_the_schedule_are_stageless_and_flagged(self):
+        before = bucket("2026-09-05T13:59:45Z")
+        after = bucket("2026-09-05T14:01:30Z")  # offset 90 == the end of the last stage
+        a = cr.assign_buckets([before, after], self.stages, REF_EPOCH)
+        self.assertEqual([x["stage"] for x in a], [None, None])
+        self.assertEqual([x["boundary"] for x in a], [True, True])
+
+
+class StagesFromScheduleTests(unittest.TestCase):
+    def setUp(self):
+        self.stages, _ = cr.schedule_grid(SCHEDULE)
+
+    def test_groups_buckets_per_intended_stage_with_offered_eps(self):
+        buckets = [bucket("2026-09-05T14:00:00Z"), bucket("2026-09-05T14:00:15Z"),
+                   bucket("2026-09-05T14:00:30Z"), bucket("2026-09-05T14:00:45Z"),
+                   bucket("2026-09-05T14:01:00Z"), bucket("2026-09-05T14:01:15Z")]
+        groups = cr.stages_from_schedule(buckets, self.stages, REF_EPOCH)
+        self.assertEqual([g["stage"] for g in groups], [0, 1])
+        self.assertEqual([len(g["buckets"]) for g in groups], [2, 4])
+        self.assertEqual([g["eps_offered"] for g in groups], [1000.0, 4000.0])
+        self.assertEqual([g["intended_seconds"] for g in groups], [30.0, 60.0])
+        self.assertEqual([g["boundary_buckets"] for g in groups], [0, 0])
+
+    def test_a_trailing_overrun_becomes_its_own_stageless_group(self):
+        buckets = [bucket("2026-09-05T14:00:00Z"), bucket("2026-09-05T14:01:30Z")]
+        groups = cr.stages_from_schedule(buckets, self.stages, REF_EPOCH)
+        self.assertEqual([g["stage"] for g in groups], [0, None])
+        self.assertIsNone(groups[1]["eps_offered"])
+        self.assertEqual(groups[1]["boundary_buckets"], 1)
+
+    def test_counts_the_straddling_buckets_of_each_stage(self):
+        # Offset the grid by 7 s so the 30 s edge falls inside a bucket.
+        buckets = [bucket("2026-09-05T14:00:07Z"), bucket("2026-09-05T14:00:22Z"),
+                   bucket("2026-09-05T14:00:37Z")]
+        groups = cr.stages_from_schedule(buckets, self.stages, REF_EPOCH)
+        self.assertEqual([g["stage"] for g in groups], [0, 1])
+        self.assertEqual(groups[0]["boundary_buckets"], 1)  # the 14:00:22 bucket
+
+
+class AlignmentLinesTests(unittest.TestCase):
+    def test_schedule_alignment_states_its_source_and_precision(self):
+        lines = cr.alignment_lines({"stages_from": "schedule", "reference": REF,
+                                    "reference_source": "run.start_at (the scheduled instant every generator shared)",
+                                    "uncertainty_sec": 2.5, "note": None})
+        joined = " ".join(lines)
+        self.assertIn("resolved `schedule`", joined)
+        self.assertIn("run.start_at", joined)
+        self.assertIn("±2.5s", joined)
+        self.assertIn("eps offered", joined)
+
+    def test_heuristic_alignment_is_labelled_as_such(self):
+        lines = cr.alignment_lines({"stages_from": "heuristic", "note": "this artifact predates the `schedule` field"})
+        self.assertEqual(len(lines), 1)
+        self.assertIn("stage boundaries inferred from delivered EPS (heuristic; older artifact)", lines[0])
+        self.assertIn("predates", lines[0])
+
+    def test_nothing_to_say_without_stages(self):
+        self.assertEqual(cr.alignment_lines(None), [])
+        self.assertEqual(cr.alignment_lines({"stages_from": "none"}), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
