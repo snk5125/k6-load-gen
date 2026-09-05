@@ -77,6 +77,7 @@ The container command is never overridden. Configuration is environment only.
 | `EMIT_TIMELINE` | profile, else `1` | Bucketed timeline output. Costs throughput at very high rates |
 | `KEEP_RAW` | `0` | Also ship the gzipped raw sample stream |
 | `TIMELINE_BUCKET_SEC` | `15` | Timeline bucket width, seconds |
+| `START_AT` | unset | ISO-8601 UTC timestamp (or Unix epoch seconds) to wait for before starting k6 — once, before any generator in a fleet task, so they start together. Past or unparseable: logs it and starts immediately. `fleet-launch run` injects this automatically (`--start-lead`, default 90s) |
 | `AWS_REGION` | — | **Required when `RESULTS_URI` is `s3://`.** Fargate cannot resolve one itself; without it artifacts silently fail to persist |
 
 ### Per-type overrides

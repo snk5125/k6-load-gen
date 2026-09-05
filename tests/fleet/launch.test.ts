@@ -295,6 +295,64 @@ describe('fleet-launch run (spawned, stub aws)', () => {
   });
 });
 
+/** Every `ecs run-task` invocation's environment array, parsed in launch order. */
+function runTaskEnvs(lines: string[]): Array<Array<{ name: string; value: string }>> {
+  return lines
+    .filter((l) => l.startsWith('ecs run-task'))
+    .map((l) => JSON.parse(l.slice(l.indexOf('{'), l.lastIndexOf('}') + 1)).containerOverrides[0].environment);
+}
+
+describe('fleet-launch run — START_AT scheduled start (--start-lead)', () => {
+  it('injects a START_AT --start-lead seconds ahead, identical across every task, and logs it once', () => {
+    const binDir = stubAws();
+    const ov = overridesFile([{ name: 'RUN_ID', value: 'f1' }]);
+    const before = Date.now();
+    const r = run(binDir, ['run', ...baseArgs, '--overrides', ov, '--count', '3', '--no-merge', '--start-lead', '5']);
+    expect(r.status, r.stderr).toBe(0);
+    const envs = runTaskEnvs(r.lines);
+    expect(envs).toHaveLength(3);
+    const values = envs.map((e) => e.find((x) => x.name === 'START_AT')?.value);
+    expect(values.every((v) => v !== undefined)).toBe(true);
+    expect(new Set(values).size).toBe(1); // identical across tasks
+    const ms = Date.parse(values[0]!);
+    expect(ms - before).toBeGreaterThanOrEqual(4000);
+    expect(ms - before).toBeLessThanOrEqual(9000);
+    expect(r.stderr).toMatch(/START_AT/);
+  });
+
+  it('defaults --start-lead to 90 seconds when not given', () => {
+    const binDir = stubAws();
+    const ov = overridesFile([{ name: 'RUN_ID', value: 'f1' }]);
+    const before = Date.now();
+    const r = run(binDir, ['run', ...baseArgs, '--overrides', ov, '--count', '1', '--no-merge']);
+    expect(r.status, r.stderr).toBe(0);
+    const envs = runTaskEnvs(r.lines);
+    const ms = Date.parse(envs[0].find((x) => x.name === 'START_AT')!.value);
+    expect(ms - before).toBeGreaterThanOrEqual(85000);
+    expect(ms - before).toBeLessThanOrEqual(95000);
+  });
+
+  it('--no-start-lead injects no START_AT at all', () => {
+    const binDir = stubAws();
+    const ov = overridesFile([{ name: 'RUN_ID', value: 'f1' }]);
+    const r = run(binDir, ['run', ...baseArgs, '--overrides', ov, '--count', '2', '--no-merge', '--no-start-lead']);
+    expect(r.status, r.stderr).toBe(0);
+    const envs = runTaskEnvs(r.lines);
+    expect(envs).toHaveLength(2);
+    for (const e of envs) expect(e.find((x) => x.name === 'START_AT')).toBeUndefined();
+  });
+
+  it('preserves a file-supplied START_AT instead of injecting a new one', () => {
+    const binDir = stubAws();
+    const ov = overridesFile([{ name: 'RUN_ID', value: 'f1' }, { name: 'START_AT', value: '2026-09-05T14:00:00Z' }]);
+    const r = run(binDir, ['run', ...baseArgs, '--overrides', ov, '--count', '2', '--no-merge', '--start-lead', '5']);
+    expect(r.status, r.stderr).toBe(0);
+    const envs = runTaskEnvs(r.lines);
+    expect(envs).toHaveLength(2);
+    for (const e of envs) expect(e.find((x) => x.name === 'START_AT')!.value).toBe('2026-09-05T14:00:00Z');
+  });
+});
+
 describe('fleet-launch merge (spawned, stub aws)', () => {
   it('merges an existing run prefix without launching anything', () => {
     const binDir = stubAws();

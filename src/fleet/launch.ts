@@ -13,6 +13,7 @@ import { exitCodePrecedence } from './merge.ts';
  *                      --overrides FILE --count N [--results-uri s3://...] [--run-id ID]
  *                      [--launch-type FARGATE] [--region R] [--poll-interval 15]
  *                      [--timeout 21600] [--no-merge] [--work-dir DIR]
+ *                      [--start-lead 90] [--no-start-lead]
  *   fleet-launch merge --results-uri s3://bucket/prefix --run-id ID --count N
  *                      [--region R] [--exit-codes 0,99,...] [--work-dir DIR]
  *
@@ -23,6 +24,13 @@ import { exitCodePrecedence } from './merge.ts';
  * single-task fleet would (src/fleet/cli.ts), uploads the fleet artifacts
  * under runs/<run_id>/fleet/ plus the fleet index row, prints the fleet
  * report and exits with fleet.exit_code.
+ *
+ * It also injects START_AT = now + --start-lead seconds (default 90) into
+ * every task, unless the overrides file already sets one (left as-is) or
+ * --no-start-lead is given (none injected). Each task's own bin/run.sh
+ * waits until that instant before starting k6, which is what keeps N
+ * independently-placed ECS tasks starting together instead of drifting by
+ * however long RunTask took to schedule each one.
  *
  * Packaging: this ships INSIDE the k6-load-gen image and is run as a local
  * container — `docker run ... <image> fleet-launch run ...` (bin/run.sh
@@ -48,6 +56,13 @@ export interface RunArgs {
   timeout: number;
   merge: boolean;
   workDir?: string;
+  /** ISO-8601 UTC instant to inject as START_AT on every task, or undefined
+   * to inject none (--no-start-lead, or the overrides file already has one —
+   * see the resolution in main()). bin/run.sh's wait_for_start_at sleeps
+   * until this instant before starting k6, which is what keeps a
+   * multi-task fleet's independently-launched tasks starting together
+   * instead of drifting by however long ECS took to place each one. */
+  startAt?: string;
 }
 
 interface Overrides {
@@ -72,13 +87,17 @@ export function readOverrideVar(o: Overrides, name: string): string | undefined 
 }
 
 /** The overrides for generator `i` of `n`: the file's environment minus any
- * GEN_INDEX/GEN_COUNT, plus the injected pair (and RUN_ID when supplied). */
-export function injectGenerator(o: Overrides, i: number, n: number, runId?: string): Overrides {
+ * GEN_INDEX/GEN_COUNT, plus the injected pair (and RUN_ID/START_AT when
+ * supplied). `startAt` is only ever passed when the caller has already
+ * decided the overrides file has none of its own — see main()'s resolution
+ * — so there is nothing of the file's to filter out here, unlike RUN_ID. */
+export function injectGenerator(o: Overrides, i: number, n: number, runId?: string, startAt?: string): Overrides {
   const co = o.containerOverrides?.[0];
   if (!co) throw new Error('overrides must contain containerOverrides[0] with an environment array');
   const env = (co.environment ?? []).filter((e) => !['GEN_INDEX', 'GEN_COUNT'].includes(e.name) && !(runId && e.name === 'RUN_ID'));
   env.push({ name: 'GEN_INDEX', value: String(i) }, { name: 'GEN_COUNT', value: String(n) });
   if (runId) env.push({ name: 'RUN_ID', value: runId });
+  if (startAt) env.push({ name: 'START_AT', value: startAt });
   return { ...o, containerOverrides: [{ ...co, environment: env }, ...(o.containerOverrides ?? []).slice(1)] };
 }
 
@@ -121,7 +140,7 @@ interface Launched { genIndex: number; taskArn: string }
 function launch(a: RunArgs, overrides: Overrides, runId: string): Launched[] {
   const out: Launched[] = [];
   for (let i = 0; i < a.count; i++) {
-    const o = injectGenerator(overrides, i, a.count, readOverrideVar(overrides, 'RUN_ID') === runId ? undefined : runId);
+    const o = injectGenerator(overrides, i, a.count, readOverrideVar(overrides, 'RUN_ID') === runId ? undefined : runId, a.startAt);
     const res = JSON.parse(
       aws(
         [
@@ -305,9 +324,9 @@ function mergeInto(m: MergeArgs, work: string, bucket: string, prefix: string, r
 
 const FLAGS_WITH_VALUE = new Set([
   'cluster', 'task-definition', 'network-configuration', 'overrides', 'count', 'launch-type', 'region',
-  'results-uri', 'run-id', 'poll-interval', 'timeout', 'work-dir', 'exit-codes',
+  'results-uri', 'run-id', 'poll-interval', 'timeout', 'work-dir', 'exit-codes', 'start-lead',
 ]);
-const FLAGS_BARE = new Set(['no-merge', 'help']);
+const FLAGS_BARE = new Set(['no-merge', 'help', 'no-start-lead']);
 
 export function parseArgs(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
@@ -352,6 +371,7 @@ const USAGE = `usage:
                      --overrides FILE --count N [--results-uri s3://...] [--run-id ID]
                      [--launch-type FARGATE] [--region R] [--poll-interval 15]
                      [--timeout 21600] [--no-merge] [--work-dir DIR]
+                     [--start-lead 90] [--no-start-lead]
   fleet-launch merge --results-uri s3://bucket/prefix --run-id ID --count N
                      [--region R] [--exit-codes 0,99,...] [--work-dir DIR]
 `;
@@ -427,6 +447,22 @@ export function main(argv: string[]): number {
   if (a.merge && !a.resultsUri) {
     throw new Error('RESULTS_URI is not in the overrides file; pass --results-uri (or --no-merge to skip the merge)');
   }
+
+  // START_AT: injected as now + --start-lead seconds unless the overrides
+  // file already has one (left untouched) or --no-start-lead disables the
+  // whole feature. Resolved and logged once here, then handed unchanged to
+  // every task in launch() — see injectGenerator.
+  const startLeadSec = num(o, 'start-lead', 90);
+  const fileStartAt = readOverrideVar(overrides, 'START_AT');
+  if (o['no-start-lead'] === true) {
+    log('--no-start-lead: not injecting START_AT');
+  } else if (fileStartAt !== undefined) {
+    log(`START_AT ${fileStartAt} already set in the overrides file; leaving it`);
+  } else {
+    a.startAt = new Date(Date.now() + startLeadSec * 1000).toISOString();
+    log(`START_AT ${a.startAt} (--start-lead ${startLeadSec}s)`);
+  }
+
   const runId = a.runId ?? generateRunId();
   // Validates the run_id allowlist before anything is launched.
   artifactKeys({ run_id: runId, gen_index: null, started_at: new Date().toISOString() }, '');

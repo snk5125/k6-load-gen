@@ -13,6 +13,66 @@ RESULTS_URI="${RESULTS_URI:-}"
 KEEP_RAW="${KEEP_RAW:-0}"
 TIMELINE_BUCKET_SEC="${TIMELINE_BUCKET_SEC:-15}"
 export TIMELINE_BUCKET_SEC
+START_AT="${START_AT:-}"
+
+# --- Scheduled start (START_AT). --------------------------------------------
+#
+# START_AT is either an ISO-8601 UTC timestamp (2026-09-05T14:00:00Z) or a
+# Unix epoch in seconds. It exists so a multi-task fleet's tasks — which
+# each launch independently via ECS RunTask and land on hosts at slightly
+# different times — actually start generating load at (approximately) the
+# same instant; src/fleet/launch.ts computes and injects it. It is honoured
+# here, not there, because the skew it corrects for happens after the
+# container starts.
+#
+# This script is POSIX sh with no GNU date guaranteed: the container image
+# is Linux (GNU date, `date -u -d STRING`), but this wrapper's own test
+# suite runs on macOS (BSD date, no -d; `-j -f INPUT_FMT STRING` instead).
+# to_epoch tries the epoch and GNU forms first and only falls back to the
+# BSD invocation when both fail, so neither platform pays for the other's
+# fallback.
+to_epoch() {
+  ts=$1
+  case "$ts" in
+    *[!0-9]*)
+      # ISO-8601 form.
+      if epoch=$(date -u -d "$ts" +%s 2>/dev/null); then
+        printf '%s\n' "$epoch"
+        return 0
+      fi
+      date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null
+      return $?
+      ;;
+    *)
+      # Already a Unix epoch in seconds.
+      printf '%s\n' "$ts"
+      return 0
+      ;;
+  esac
+}
+
+# Sleeps in whole seconds until START_AT. A generator that starts after
+# START_AT (clock already past it, or START_AT unparseable) logs why and
+# proceeds immediately rather than blocking or failing the run — a
+# scheduling miss must never turn into a lost run. Called once, before k6
+# (or, in fleet mode, before any generator) starts, so every generator in a
+# single-task fleet shares this exact wait instead of drifting apart.
+wait_for_start_at() {
+  [ -n "$START_AT" ] || return 0
+  epoch=$(to_epoch "$START_AT")
+  if [ -z "$epoch" ]; then
+    echo "run.sh: could not parse START_AT=$START_AT (want ISO-8601 UTC or a Unix epoch in seconds); ignoring it" >&2
+    return 0
+  fi
+  now=$(date -u +%s)
+  delta=$((epoch - now))
+  if [ "$delta" -le 0 ]; then
+    echo "run.sh: START_AT was $((0 - delta)) s ago; starting immediately (late)" >&2
+    return 0
+  fi
+  echo "run.sh: waiting ${delta}s for START_AT=$START_AT" >&2
+  sleep "$delta"
+}
 
 # Overridable so the exact same wrapper runs in the container and in local
 # development, where /app/dist (Task 5's build output) does not exist yet.
@@ -282,6 +342,10 @@ if [ "$FLEET" = "1" ]; then
     echo "run.sh: $GEN_COUNT generators on $NCPU CPUs — k6 is CPU-bound, so they will contend and may drop iterations (which voids the run); prefer GEN_COUNT <= CPUs or a multi-task fleet" >&2
   fi
 
+  # Waited ONCE, here, before any generator is spawned — so all N share the
+  # same start rather than each computing (and drifting from) its own.
+  wait_for_start_at
+
   # One k6 process per generator, each in its own directory (k6 writes
   # summary.json relative to its cwd, so the subshell's cd is what keeps
   # the N summaries apart). The exit code is written to a file from INSIDE
@@ -422,6 +486,8 @@ fi
 # wrote. That is also why K6_SCRIPT/TIMELINE_CLI/INDEX_CLI must be absolute:
 # a relative override would stop resolving correctly the moment we cd.
 cd "$WORKDIR" || exit 1
+
+wait_for_start_at
 
 # --- Run k6, capturing its OWN exit status while still streaming its
 # output to the container log in real time. --------------------------------
