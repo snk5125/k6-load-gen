@@ -15,7 +15,7 @@ function gen(i: number, over: Partial<RunSummary> = {}): RunSummary {
       send_failures: { rate: 0, passes: 0, fails: 10 },
       send_duration: { avg: 5, min: 1, med: 4, max: 20, 'p(90)': 8, 'p(95)': 9, 'p(99)': 12 + i },
     },
-    types: { 'json-app': { events_attempted: 1000, events_sent: 1000, send_failures: 0, send_duration: { 'p(99)': 12 + i }, wire_bytes: null, send_errors: 0 } },
+    types: { 'json-app': { events_attempted: 1000, events_sent: 1000, send_failures: 0, send_duration: { 'p(99)': 12 + i }, wire_bytes: null, send_errors: 0, events_rejected: 0 } },
     thresholds: { slo: [{ ok: true, metric: 'send_failures', expression: 'rate<0.001' }], structural_count: 6 },
     verdict_from: ['send_failures rate<0.001'],
     validity: { dropped_iterations: 0, generator_cpu: null, valid: true, reasons: [] },

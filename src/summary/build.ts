@@ -76,7 +76,7 @@ export interface TypeSummary {
    * it required once fleet merge carries it — `buildTypeSummary` below
    * always populates it, so a single-generator summary never omits it.
    */
-  events_rejected?: number | null;
+  events_rejected: number | null;
 }
 
 export interface RunSummary {

@@ -176,3 +176,19 @@ class ComponentDeltaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CoverageNoteTests(unittest.TestCase):
+    def test_no_note_for_complete_off_or_absent(self):
+        from correlate_run import coverage_note
+        self.assertIsNone(coverage_note(None))
+        self.assertIsNone(coverage_note({"expected": 3, "present": [0, 1, 2], "missing": [], "complete": True, "configured_off": False}))
+        self.assertIsNone(coverage_note({"expected": 3, "present": [], "missing": [0, 1, 2], "complete": False, "configured_off": True}))
+
+    def test_incomplete_names_the_missing_generators(self):
+        from correlate_run import coverage_note
+        note = coverage_note({"expected": 3, "present": [0, 2], "missing": [1], "complete": False, "configured_off": False})
+        self.assertIn("INCOMPLETE", note)
+        self.assertIn("2/3", note)
+        self.assertIn("gen-1", note)
+        self.assertIn("no knee verdict", note)

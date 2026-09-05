@@ -352,6 +352,19 @@ def summarize_stage(st, rows, comps, cw, batch_size):
     return out
 
 
+def coverage_note(cov):
+    """A fleet's `fleet.timeline_coverage` (None on single-generator runs or
+    older artifacts) -> a note when the fleet timeline cannot be trusted for
+    stage analysis, else None. `configured_off` means timelines were
+    deliberately disabled (no timeline at all), which is not a coverage
+    problem — there is simply nothing to analyse."""
+    if not cov or cov.get("complete") or cov.get("configured_off"):
+        return None
+    missing = ", ".join(f"gen-{i}" for i in cov.get("missing", []))
+    return (f"timeline coverage INCOMPLETE: {len(cov.get('present', []))}/{cov.get('expected')} generators "
+            f"(missing {missing}); the fleet timeline under-counts, so per-stage figures are partial and no knee verdict is given")
+
+
 def knee_verdict(stages):
     """First stage where p99 or failure_rate breaks away from the first two stages."""
     base = [s for s in stages[:2] if s["generator"]["send_p99_ms_median"] is not None]
@@ -402,9 +415,13 @@ def cmd_report(a):
         "warnings": summary.get("warnings", []),
         "stages": stages,
         "knee": knee_verdict(stages) if stages else None,
+        "timeline_coverage": (fleet or {}).get("timeline_coverage"),
         "scrapes": {"file": a.metrics, "count": len(rows), "first": iso(rows[0]["ts"]) if rows else None, "last": iso(rows[-1]["ts"]) if rows else None},
         "cloudwatch": {"cluster": a.cw_cluster, "service": a.cw_service, "points": len(cw) if cw else 0},
     }
+    note = coverage_note(report["timeline_coverage"])
+    if note:
+        report["knee"] = {"stage": None, "reason": note}
     if a.json:
         json.dump(report, open(a.json, "w"), indent=2)
     print(render(report))
@@ -438,6 +455,9 @@ def render(r):
     L.append(f"- thresholds failed: {[t['metric'] + ' ' + t['expression'] for t in r['thresholds_failed']] or 'none'}")
     if r["warnings"]:
         L.append(f"- warnings: {r['warnings']}")
+    note = coverage_note(r.get("timeline_coverage"))
+    if note:
+        L.append(f"- {note}")
     L.append(f"- scrapes: {r['scrapes']['count']} from {r['scrapes']['first']} to {r['scrapes']['last']}; cloudwatch points: {r['cloudwatch']['points']}")
     L.append("")
     if r["stages"]:

@@ -247,12 +247,13 @@ function mergeTypes(
   const out: Record<string, TypeSummary> = {};
   for (const name of [...names].sort()) {
     const entries = reporting.map((r) => r.summary.types?.[name]);
-    const field = (k: 'events_attempted' | 'events_sent' | 'wire_bytes' | 'send_errors') =>
+    const field = (k: 'events_attempted' | 'events_sent' | 'events_rejected' | 'wire_bytes' | 'send_errors') =>
       sumNullable(entries.map((e) => e?.[k]), warnings, `types.${name}.${k}`, gens);
     const durations = entries.map((e) => e?.send_duration).filter((d): d is Record<string, number> => !!d);
     out[name] = {
       events_attempted: field('events_attempted'),
       events_sent: field('events_sent'),
+      events_rejected: field('events_rejected'),
       send_failures: maxNullable(entries.map((e) => e?.send_failures)),
       send_duration: durations.length === 0 ? null : mergeValues(durations, warnings, `types.${name}.send_duration`),
       wire_bytes: field('wire_bytes'),
@@ -371,6 +372,24 @@ export function mergeSummaries(
   timeline_events_sent?: number | null,
 ): FleetSummary {
   const sorted = [...inputs].sort((a, b) => a.gen_index - b.gen_index);
+  // A subset merge — `fleet-cli merge out gen-0 gen-2` by hand, or a
+  // multi-task fleet whose gen-1 never wrote anything to S3 — is an
+  // INCOMPLETE fleet, not an error. When the reporting generators declare a
+  // larger fleet than was supplied, that declared size is the fleet's, and
+  // every index nobody supplied becomes a generator with no summary, so it
+  // shows up in the breakdown, the reasons and generators_reported.
+  // Only when the reporting generators AGREE on a size: if they disagree
+  // with each other, that is a configuration fault reported below, and the
+  // supplied directory count stays the fleet size.
+  const declaredCounts = new Set(sorted.filter((i) => i.summary !== null).map((i) => i.summary!.generator.gen_count));
+  if (declaredCounts.size === 1) {
+    const declared = [...declaredCounts][0];
+    if (declared > gen_count) gen_count = declared;
+  }
+  for (let i = 0; i < gen_count; i++) {
+    if (!sorted.some((s) => s.gen_index === i)) sorted.push({ gen_index: i, exit_code: null, summary: null });
+  }
+  sorted.sort((a, b) => a.gen_index - b.gen_index);
 
   // Hard errors first, before any evidence is read: cli.ts writes nothing on a
   // throw, and a fleet whose members are not one run is not a measurement.

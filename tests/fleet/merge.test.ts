@@ -35,7 +35,7 @@ function gen(i: number, over: Partial<RunSummary> = {}, count = 2): RunSummary {
       send_duration: { avg: 5 + i, min: 1, med: 4 + i, max: 20 + i, 'p(90)': 8 + i, 'p(95)': 9 + i, 'p(99)': 12 + i },
     },
     types: {
-      'json-app': { events_attempted: 1000 + i, events_sent: 1000, send_failures: 0, send_duration: { 'p(99)': 12 + i }, wire_bytes: 5000, send_errors: 0 },
+      'json-app': { events_attempted: 1000 + i, events_sent: 1000, send_failures: 0, send_duration: { 'p(99)': 12 + i }, wire_bytes: 5000, send_errors: 0, events_rejected: 0 },
     },
     thresholds: { slo: [{ ok: true, metric: 'send_failures', expression: 'rate<0.001' }], structural_count: 6 },
     verdict_from: ['send_failures rate<0.001'],
@@ -311,11 +311,15 @@ describe('mergeSummaries — fleet identity (soft: invalid, still merged)', () =
     expect(f.metrics.events_sent.count).toBe(2000);
   });
 
-  it('marks the fleet invalid when every generator agrees on a gen_count the merge did not see', () => {
+  it('treats generators that all declare a larger fleet than was supplied as an incomplete fleet of that size', () => {
+    // Two of five: the merge adopts the declared size and the three unsupplied
+    // indexes become generators with no summary — a subset merge, not a fault.
     const f = mergeSummaries([input(0, gen(0, {}, 5)), input(1, gen(1, {}, 5))], 2);
     expect(f.validity.valid).toBe(false);
-    expect(reasonsOf(f)).toMatch(/generator\.gen_count/);
-    expect(reasonsOf(f)).toMatch(/2 generator directories/);
+    expect(f.fleet.generator_count).toBe(5);
+    expect(f.fleet.generators_reported).toBe(2);
+    expect(reasonsOf(f)).not.toMatch(/generator\.gen_count/);
+    for (const i of [2, 3, 4]) expect(reasonsOf(f)).toMatch(new RegExp(`gen-${i} produced no summary`));
   });
 
   it('marks the fleet invalid when generators disagree on active_types', () => {
@@ -395,5 +399,24 @@ describe('mergeSummaries — timeline coverage', () => {
     // incomplete coverage already carries its own warning; the totals cannot be compared
     const partial = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2, { 0: true, 1: false }, 1000);
     expect(partial.warnings.join(' ')).not.toMatch(/truncated/);
+  });
+});
+
+describe('mergeSummaries — integration of later work', () => {
+  it('sums events_rejected per type like the other counts', () => {
+    const withRejected = (i: number) => gen(i, { types: { 'json-app': { ...gen(i).types['json-app'], events_rejected: 5 + i } } });
+    const f = mergeSummaries([input(0, withRejected(0)), input(1, withRejected(1))], 2);
+    expect(f.types['json-app'].events_rejected).toBe(11);
+  });
+
+  it('treats a subset of a declared fleet as an incomplete fleet, not an error', () => {
+    // gen-0 and gen-2 of a fleet of 3 (their summaries say gen_count 3); gen-1 was never supplied.
+    const f = mergeSummaries([input(0, gen(0, {}, 3)), input(2, gen(2, {}, 3))], 2);
+    expect(f.generator.gen_count).toBe(3);
+    expect(f.fleet.generator_count).toBe(3);
+    expect(f.fleet.generators_reported).toBe(2);
+    expect(f.fleet.generators.map((g) => [g.gen_index, g.summary_present])).toEqual([[0, true], [1, false], [2, true]]);
+    expect(f.validity.valid).toBe(false);
+    expect(f.validity.reasons.join(' ')).toMatch(/gen-1 produced no summary\.json/);
   });
 });
