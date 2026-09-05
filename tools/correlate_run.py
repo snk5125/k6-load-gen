@@ -212,29 +212,43 @@ def _series_increment(values):
     where the scrape has no data for it, including comp/host absent).
 
     Endpoint subtraction is wrong whenever a Vector process restarts mid-run
-    (a Counter's Prometheus exposition resets to 0/near-0) or a component is
-    briefly absent from a scrape — both make the "delta" go negative or
-    overcount. Instead: sum the positive increment between each
-    consecutive pair of scrapes that both have the series. A decrease is a
-    reset — count only the post-reset value itself as that step's increment
-    (never negative). A scrape where the series disappeared after being
-    present contributes an unknown (not zero) increment for that step: it is
-    counted as a gap, and resumption afterward starts a fresh baseline with
-    no retroactive credit for whatever happened during the gap.
+    (a Counter's Prometheus exposition resets to 0/near-0), so instead: sum
+    the increment between each consecutive pair of OBSERVATIONS. A decrease
+    is a reset — count only the post-reset value itself as that step's
+    increment (never negative).
 
-    Returns (increment, reset, gaps, had_data)."""
+    A scrape where the series is absent is a gap, and it is counted as one,
+    but it does NOT discard the increment across it. These counters are
+    cumulative: the value at resumption already includes whatever the
+    component did while the series was missing, so the rise from the last
+    known value to the resumed one is a real, known increment and is
+    credited in full. (Treating the resumption as a fresh baseline lost the
+    increment both across the gap and out of it: 100, 110, -, 130, 140 came
+    to 20 instead of 40.) Only a resumed value BELOW the last known one is
+    not a continuation — that is a restart, handled as a reset above.
+
+    Fewer than two observations cannot be differenced at all: one observation
+    is a level, not an increment. The increment is then None (unknown), never
+    0.0 — publishing a confident zero would claim the component handled
+    nothing, which is a different and unsupported statement.
+
+    Returns (increment, reset, gaps, had_data); `increment` is None when
+    `had_data` is False, and also when the series was seen exactly once."""
     increment = 0.0
     reset = False
     gaps = 0
-    had_data = False
+    seen = 0
     last = None
+    in_gap = False
     for v in values:
         if v is None:
-            if last is not None:
+            # One gap per contiguous run of absent scrapes, counted only once
+            # the series has actually been seen (leading absences are not gaps).
+            if last is not None and not in_gap:
                 gaps += 1
-            last = None
+                in_gap = True
             continue
-        had_data = True
+        seen += 1
         if last is not None:
             if v < last:
                 increment += v
@@ -242,7 +256,12 @@ def _series_increment(values):
             else:
                 increment += v - last
         last = v
-    return increment, reset, gaps, had_data
+        in_gap = False
+    if seen == 0:
+        return None, reset, gaps, False
+    if seen < 2:
+        return None, reset, gaps, True
+    return increment, reset, gaps, True
 
 
 def _gauge(host_map, field):
@@ -261,7 +280,11 @@ def component_delta(rows, comp, t0, t1):
     being summed across hosts so one host's counter reset cannot mask
     another host's real growth. None when no scrape falls in [t0, t1] at
     all; a component simply absent from those scrapes still gets a result
-    with None fields (nothing to report, but the window was scraped)."""
+    with None fields (nothing to report, but the window was scraped).
+
+    `window_sec` is the span the increments actually cover (baseline scrape ts
+    -> last in-window scrape ts) and is the correct denominator for rates;
+    `nominal_sec` is the stage's own length, kept for reporting only."""
     sequence, within = select_scrape_window(rows, t0, t1)
     if not within:
         return None
@@ -271,27 +294,46 @@ def component_delta(rows, comp, t0, t1):
     if not hosts:
         hosts = {""}
     sums = {f: 0.0 for f in COUNTERS}
-    present = {f: False for f in COUNTERS}
+    known = {f: False for f in COUNTERS}   # at least one host could be differenced
+    seen = {f: False for f in COUNTERS}    # the series appeared at all
     reset = False
     gaps = 0
+    lone = False
     for host in hosts:
         for f in COUNTERS:
             values = [r.get("components", {}).get(comp, {}).get(host, {}).get(f) for r in sequence]
             inc, f_reset, f_gaps, had = _series_increment(values)
             if had:
-                sums[f] += inc
-                present[f] = True
+                seen[f] = True
+                if inc is None:
+                    lone = True          # present, but only one observation
+                else:
+                    sums[f] += inc
+                    known[f] = True
             reset = reset or f_reset
             gaps += f_gaps
-    d = {f: (sums[f] if present[f] else None) for f in COUNTERS}
+    d = {f: (sums[f] if known[f] else None) for f in COUNTERS}
+    # Fields that WERE exposed but could not be differenced. The distinction
+    # matters downstream: a field that never appeared is a genuine zero (Vector
+    # only emits errors/discarded once something has been counted), while one
+    # of these is unknown and must print as "-".
+    d["unknown"] = sorted(f for f in COUNTERS if seen[f] and not known[f])
     last_components = within[-1].get("components", {}).get(comp, {})
     d["utilization"] = _gauge(last_components, "utilization")
     d["buffer_events"] = _gauge(last_components, "buffer_events")
     d["buffer_bytes"] = _gauge(last_components, "buffer_bytes")
-    d["window_sec"] = t1 - t0
-    d["window"] = {"from": iso(sequence[0]["ts"]), "to": iso(sequence[-1]["ts"]), "scrapes": len(sequence)}
+    # The increments above span from the BASELINE scrape (taken before t0) to
+    # the last in-window scrape — up to one scrape interval more than the stage
+    # itself. Rates must divide by that real span, not by the stage's nominal
+    # length, or every per-second figure is inflated by the baseline overhang.
+    span = sequence[-1]["ts"] - sequence[0]["ts"]
+    d["window_sec"] = span
+    d["nominal_sec"] = t1 - t0
+    d["window"] = {"from": iso(sequence[0]["ts"]), "to": iso(sequence[-1]["ts"]),
+                   "scrapes": len(sequence), "seconds": span}
     d["reset"] = reset
     d["gaps"] = gaps
+    d["lone_scrape"] = lone
     return d
 
 
@@ -320,38 +362,64 @@ DEFAULT_BUCKET_SEC = 15
 def start_reference(summary):
     """Where the intended schedule starts, for THIS artifact.
 
-    `run.start_at` (the instant every generator was told to start, injected as
-    START_AT) wins when it is set: it is one instant shared by the whole fleet,
-    so one stage grid describes every generator. Without it the reference is
-    the earliest generator start — a fleet whose members began seconds apart
-    has no single true boundary, and `uncertainty_sec` says by how much.
+    The grid is anchored on when the generators ACTUALLY began — the earliest
+    of `fleet.generators[].started_at`, or `run.started_at` for a single
+    generator. `run.start_at` (the instant every generator was told to start,
+    injected as START_AT) is deliberately NOT the origin: bin/run.sh sleeps
+    until START_AT and k6 then takes its own time to initialise, and a fleet
+    whose tasks only came up after that instant has already missed it. Laying
+    the intended grid at START_AT then shifts every boundary by the lateness,
+    so every row gets the wrong stage index and the wrong "eps offered" —
+    exactly the runs worth analysing are the ones mislabelled.
 
-    Returns {"epoch", "source", "uncertainty_sec"} or None when the artifact
-    carries no usable start at all.
+    `start_at` survives in two roles only:
 
-    `uncertainty_sec` is deliberately NOT zero when aligning on `run.start_at`:
-    bin/run.sh sleeps until START_AT and k6 then takes its own time to
-    initialise, so the scheduled instant is an upper bound on how early any
-    generator's first stage began. It is the lateness of the last generator to
-    actually start, and it is what widens boundary marking below.
+      * `lateness_sec` = anchor - start_at, reported so a reader can see how
+        far the fleet drifted from its schedule;
+      * extra uncertainty when start_at is LATER than the observed start. A
+        generator cannot begin before the instant it is waiting for, so that
+        ordering is impossible and means the two clocks disagree; the
+        discrepancy widens the boundary precision.
+
+    Only an artifact with no usable `started_at` at all falls back to
+    `start_at` as the origin — a bad grid beats no grid there, and the source
+    string says which was used.
+
+    Returns {"epoch", "source", "uncertainty_sec", "lateness_sec"} or None
+    when the artifact carries no usable start of either kind.
+
+    `uncertainty_sec` is the observed spread between the first and last
+    generator to start (a fleet whose members began seconds apart has no
+    single true boundary), widened as above; it is what widens boundary
+    marking in assign_buckets.
     """
     run = summary.get("run", {}) or {}
     fleet = summary.get("fleet") or {}
+    scheduled = parse_instant(run.get("start_at"))
+
     starts = [parse_instant(g.get("started_at")) for g in fleet.get("generators", []) or []]
     starts = [x for x in starts if x is not None]
+    source = "earliest fleet.generators[].started_at (when the fleet actually began)"
     if not starts:
         one = parse_instant(run.get("started_at"))
         starts = [one] if one is not None else []
+        source = "run.started_at (when the generator actually began)"
 
-    scheduled = parse_instant(run.get("start_at"))
+    if starts:
+        anchor = min(starts)
+        skew = max(starts) - anchor
+        lateness = (anchor - scheduled) if scheduled is not None else None
+        # Starting before START_AT is impossible; treat the gap as clock
+        # disagreement and let it widen the boundary precision.
+        if lateness is not None and lateness < 0:
+            skew = max(skew, -lateness)
+        return {"epoch": anchor, "source": source, "uncertainty_sec": skew, "lateness_sec": lateness}
+
     if scheduled is not None:
-        lag = (max(starts) - scheduled) if starts else 0.0
-        return {"epoch": scheduled, "source": "run.start_at (the scheduled instant every generator shared)",
-                "uncertainty_sec": max(0.0, lag)}
-    if not starts:
-        return None
-    source = "earliest fleet.generators[].started_at" if fleet.get("generators") else "run.started_at"
-    return {"epoch": min(starts), "source": source, "uncertainty_sec": max(starts) - min(starts)}
+        return {"epoch": scheduled,
+                "source": "run.start_at (the scheduled instant; no actual start was recorded)",
+                "uncertainty_sec": 0.0, "lateness_sec": None}
+    return None
 
 
 def schedule_grid(schedule, active_types=None):
@@ -490,6 +558,36 @@ def stages_from_schedule(buckets, stages, ref_epoch, uncertainty_sec=0.0):
     return groups
 
 
+def grid_too_fine(stages, buckets):
+    """A note when the intended grid is finer than the timeline can resolve,
+    else None.
+
+    A timeline bucket is the smallest unit this report has, and every bucket is
+    attributed to the single stage containing its START. A stage shorter than
+    the bucket width therefore cannot own a bucket of its own: the bucket spans
+    it entirely, gets credited whole to whichever neighbour happens to contain
+    the bucket's start, and the short stage disappears from the table while its
+    traffic is silently added to a stage that never offered it.
+
+    Rather than attribute buckets to stages it cannot separate, the report
+    declines the schedule grid altogether and falls back to the labelled
+    delivered-EPS heuristic (an inference the reader can see and discount)
+    while saying exactly why. The widest bucket in the timeline sets the bar,
+    since that is the coarsest resolution any row will have.
+    """
+    if not stages or not buckets:
+        return None
+    widths = [float(b.get("bucket_sec") or DEFAULT_BUCKET_SEC) for b in buckets]
+    width = max(widths)
+    short = [st for st in stages if float(st.get("duration_sec") or 0) < width]
+    if not short:
+        return None
+    detail = ", ".join(f"stage {st['index']} is {st['duration_sec']:g}s" for st in short)
+    return (f"the schedule has stages shorter than the {width:g}s timeline bucket ({detail}); a bucket would "
+            "span more than one intended stage and be credited whole to a neighbour, deleting the short stage "
+            "from the report, so the schedule grid is refused and stage boundaries fall back to the heuristic")
+
+
 def stages_from_buckets(buckets):
     """Group consecutive buckets whose eps stays within 15% into stages."""
     stages = []
@@ -530,23 +628,32 @@ def summarize_stage(st, rows, comps, cw, batch_size):
             out["aggregator"][role] = {"component": comp, "note": "no scrape covering this stage"}
             continue
         # Vector only emits an errors/discarded counter once something has
-        # been counted, so a series that never appeared in the window means
-        # zero, not unknown. A series that appeared and then vanished is a
-        # gap instead (component_delta already excludes it from the sum and
-        # flags it in d["gaps"] rather than treating it as zero).
+        # been counted, so a series that NEVER appeared in the window means
+        # zero, not unknown. A series that did appear but could not be
+        # differenced (seen exactly once) is unknown and must stay None —
+        # zeroing it would claim nothing errored on no evidence.
+        def counted(field):
+            v = d.get(field)
+            if v is not None:
+                return v
+            return None if field in d.get("unknown", ()) else 0.0
+
         entry = {"component": comp, "received": d.get("received"), "sent": d.get("sent"),
-                 "errors": d["errors"] if d["errors"] is not None else 0.0,
-                 "discarded": d["discarded"] if d["discarded"] is not None else 0.0,
+                 "errors": counted("errors"), "discarded": counted("discarded"),
                  "utilization": d.get("utilization"),
                  "buffer_events": d.get("buffer_events"), "buffer_bytes": d.get("buffer_bytes"),
-                 "reset": d["reset"], "gaps": d["gaps"], "window": d["window"]}
+                 "reset": d["reset"], "gaps": d["gaps"], "lone_scrape": d["lone_scrape"],
+                 "window": d["window"], "window_sec": d["window_sec"], "nominal_sec": d["nominal_sec"]}
+        # Rates divide by the span the increments actually cover, never by the
+        # stage's nominal length (see component_delta).
         if d.get("received") is not None and d["window_sec"]:
             entry["received_per_sec"] = d["received"] / d["window_sec"]
         if d.get("handler_count"):
             entry["http_handler_ms_avg"] = 1000 * d["handler_seconds_sum"] / d["handler_count"]
         out["aggregator"][role] = entry
-        if d["reset"] or d["gaps"]:
-            quality.append({"role": role, "component": comp, "reset": d["reset"], "gaps": d["gaps"]})
+        if d["reset"] or d["gaps"] or d["lone_scrape"]:
+            quality.append({"role": role, "component": comp, "reset": d["reset"],
+                            "gaps": d["gaps"], "lone": d["lone_scrape"]})
     out["quality"] = quality
     # per-record vs per-POST sanity: source should see records/batch_size if it counts POSTs
     src, rec = out["aggregator"].get("source"), out["aggregator"].get("records")
@@ -581,23 +688,30 @@ def alignment_lines(a):
         return []
     if a.get("stages_from") == "schedule":
         out = [
-            "stage boundaries come from the run's resolved `schedule` (intended stages), laid over "
-            f"{a.get('reference')} from {a.get('reference_source')}; 'eps offered' is that stage's "
+            "stage boundaries come from the run's resolved `schedule` (intended stages), laid over the "
+            f"actual start {a.get('reference')} from {a.get('reference_source')}; 'eps offered' is that stage's "
             "target_eps_fleet. k6 ramps LINEARLY within a stage, so a bucket carries its stage index, "
             "never a ramp/hold label",
         ]
         unc = a.get("uncertainty_sec") or 0
         out.append(
-            f"boundary precision: ±{unc:.1f}s (generators did not all start on the reference instant); "
-            "the 'sched' column marks a stage's straddling buckets as '(+Nb)' — those buckets hold two "
-            "offered rates, so their delivered eps belongs cleanly to neither stage"
+            f"boundary precision: ±{unc:.1f}s (how far apart the generators actually began, plus any "
+            "disagreement with the scheduled instant); the 'sched' column marks a stage's straddling "
+            "buckets as '(+Nb)' — those buckets hold two offered rates, so their delivered eps belongs "
+            "cleanly to neither stage"
         )
+        late = a.get("lateness_sec")
+        if late is not None:
+            out.append(
+                f"the fleet began {late:+.1f}s against its scheduled START_AT ({a.get('start_at')}); the grid "
+                "is anchored on the ACTUAL start, so lateness shifts no stage label — it is reported, not applied"
+            )
         if a.get("note"):
             out.append(a["note"])
         return out
     if a.get("stages_from") == "heuristic":
         why = a.get("note") or "no schedule was available"
-        return [f"stage boundaries inferred from delivered EPS (heuristic; older artifact) — {why}. "
+        return [f"stage boundaries inferred from delivered EPS (heuristic, NOT the run's own schedule) — {why}. "
                 "'eps offered' is unknown, and a run that failed to keep up will have its stages mislabelled"]
     return []
 
@@ -637,13 +751,16 @@ def cmd_report(a):
     # mislabels exactly the runs that failed to keep up).
     ref = start_reference(summary)
     grid, grid_note = schedule_grid(summary.get("schedule"), summary["run"].get("active_types"))
-    if buckets and grid and ref:
+    too_fine = grid_too_fine(grid, buckets) if (buckets and grid) else None
+    if buckets and grid and ref and not too_fine:
         groups = stages_from_schedule(buckets, grid, ref["epoch"], ref["uncertainty_sec"])
         stages_from = "schedule"
     elif buckets:
         groups = stages_from_buckets(buckets)
         stages_from = "heuristic"
-        if grid and not ref:
+        if too_fine:
+            grid_note = too_fine
+        elif grid and not ref:
             grid_note = "the artifact carries a schedule but no usable start time to lay it over"
         elif not summary.get("schedule"):
             grid_note = "this artifact predates the `schedule` field"
@@ -666,6 +783,7 @@ def cmd_report(a):
         "reference": iso(ref["epoch"]) if ref else None,
         "reference_source": ref["source"] if ref else None,
         "uncertainty_sec": ref["uncertainty_sec"] if ref else None,
+        "lateness_sec": ref.get("lateness_sec") if ref else None,
         "note": grid_note,
         "start_at": summary["run"].get("start_at"),
         "start_skew_sec": (summary.get("fleet") or {}).get("start_skew_sec"),
@@ -762,7 +880,10 @@ def render(r):
                 if item["reset"]:
                     bits.append("counter reset (non-negative delta used)")
                 if item["gaps"]:
-                    bits.append(f"{item['gaps']} gap(s) in the series (increment unknown for that step, not counted)")
+                    bits.append(f"{item['gaps']} gap(s) in the series (counter cumulative, so the rise across "
+                                "the gap is still credited)")
+                if item.get("lone"):
+                    bits.append("one scrape in window: counters unknown")
                 notes.append(f"{item['role']} ({item['component']}): " + ", ".join(bits))
             if notes:
                 quality_lines.append(f"- stage {i} quality: " + "; ".join(notes))
