@@ -79,12 +79,66 @@ describe('src/fleet/cli.ts merge (spawned as a process)', () => {
   });
 
   it('takes the generator index from the directory name, not the order of arguments', () => {
-    const a = genDir(3, { 'summary.json': summary(3, 1), exit_code: '0\n' });
-    const b = genDir(1, { 'summary.json': summary(1, 1), exit_code: '99\n' });
+    const a = genDir(1, { 'summary.json': summary(1, 1), exit_code: '99\n' });
+    const b = genDir(0, { 'summary.json': summary(0, 1), exit_code: '0\n' });
     const out = join(root, 'fleet');
     expect(run(['merge', out, a, b]).status).toBe(0);
     const f = JSON.parse(readFileSync(join(out, 'summary.json'), 'utf8'));
-    expect(f.fleet.generators.map((g: { gen_index: number; exit_code: number }) => [g.gen_index, g.exit_code])).toEqual([[1, 99], [3, 0]]);
+    expect(f.fleet.generators.map((g: { gen_index: number; exit_code: number }) => [g.gen_index, g.exit_code])).toEqual([[0, 0], [1, 99]]);
+  });
+
+  it('rejects a generator directory whose index is outside the fleet, writing nothing', () => {
+    const a = genDir(0, { 'summary.json': summary(0, 1), exit_code: '0\n' });
+    const b = genDir(3, { 'summary.json': summary(3, 1), exit_code: '0\n' });
+    const out = join(root, 'fleet');
+    const r = run(['merge', out, a, b]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/gen-3 is outside a fleet of 2/);
+    expect(existsSync(join(out, 'summary.json'))).toBe(false);
+  });
+
+  it('refuses to merge generators from different runs, writing nothing', () => {
+    const a = genDir(0, { 'summary.json': summary(0, 1), exit_code: '0\n' });
+    const b = genDir(1, { 'summary.json': summary(1, 1).replace('"run_id":"f1"', '"run_id":"f2"'), exit_code: '0\n' });
+    const out = join(root, 'fleet');
+    const r = run(['merge', out, a, b]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/disagree on run\.run_id/);
+    expect(existsSync(join(out, 'summary.json'))).toBe(false);
+  });
+
+  it('records which generators had a timeline, and warns when one did not', () => {
+    const a = genDir(0, { 'summary.json': summary(0, 300), exit_code: '0\n', 'timeline.jsonl': bucket(300) + '\n' });
+    const b = genDir(1, { 'summary.json': summary(1, 500), exit_code: '0\n' });
+    const out = join(root, 'fleet');
+    const r = run(['merge', out, a, b]);
+    expect(r.status, r.stderr).toBe(0);
+    const f = JSON.parse(readFileSync(join(out, 'summary.json'), 'utf8'));
+    expect(f.fleet.timeline_coverage).toEqual({ expected: 2, present: [0], missing: [1], complete: false, configured_off: false });
+    expect(f.warnings.join(' ')).toMatch(/timeline coverage.*gen-1/);
+    expect(r.stdout).toMatch(/timeline coverage\s+: 1\/2 generators \(missing gen-1\)/);
+  });
+
+  it('marks coverage configured_off when no generator emitted a timeline', () => {
+    const a = genDir(0, { 'summary.json': summary(0, 1), exit_code: '0\n' });
+    const b = genDir(1, { 'summary.json': summary(1, 1), exit_code: '0\n' });
+    const out = join(root, 'fleet');
+    expect(run(['merge', out, a, b]).status).toBe(0);
+    const f = JSON.parse(readFileSync(join(out, 'summary.json'), 'utf8'));
+    expect(f.fleet.timeline_coverage).toMatchObject({ complete: false, configured_off: true, present: [] });
+    expect(f.warnings.join(' ')).not.toMatch(/timeline coverage/);
+  });
+
+  it('warns when a complete timeline holds far fewer events than the summary', () => {
+    // 800 events sent between the two summaries, 100 of them in the timeline
+    const a = genDir(0, { 'summary.json': summary(0, 300), exit_code: '0\n', 'timeline.jsonl': bucket(50) + '\n' });
+    const b = genDir(1, { 'summary.json': summary(1, 500), exit_code: '0\n', 'timeline.jsonl': bucket(50) + '\n' });
+    const out = join(root, 'fleet');
+    const r = run(['merge', out, a, b]);
+    expect(r.status, r.stderr).toBe(0);
+    const f = JSON.parse(readFileSync(join(out, 'summary.json'), 'utf8'));
+    expect(f.fleet.timeline_coverage.complete).toBe(true);
+    expect(f.warnings.join(' ')).toMatch(/timeline holds 100 of the summary's 800 events_sent/);
   });
 
   it('exits 1 and writes nothing when no generator produced a summary', () => {

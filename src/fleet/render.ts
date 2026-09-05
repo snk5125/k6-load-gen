@@ -25,6 +25,22 @@ export function renderFleetSummary(s: FleetSummary): string {
     `dropped iterations: ${s.validity.dropped_iterations}   <-- MUST be 0`,
   ];
 
+  // Coverage before any per-stage reading: the merged timeline is the sum of
+  // the timelines that existed, so a missing generator silently under-counts.
+  const cov = s.fleet.timeline_coverage;
+  if (cov) {
+    if (cov.configured_off) {
+      lines.push('timeline coverage : none (timeline emission off)');
+    } else if (cov.complete) {
+      lines.push(`timeline coverage : ${cov.expected}/${cov.expected} generators`);
+    } else {
+      lines.push(
+        `timeline coverage : ${cov.expected - cov.missing.length}/${cov.expected} generators ` +
+          `(missing ${cov.missing.map((g) => `gen-${g}`).join(', ')}) — fleet timeline under-counts`,
+      );
+    }
+  }
+
   if (s.thresholds.structural_count > 0) {
     lines.push(`structural thresholds : ${s.thresholds.structural_count} (plumbing; never fail — see docs)`);
   }

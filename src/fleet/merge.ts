@@ -30,6 +30,20 @@ import { maxNullable } from './nullable.ts';
  *    them are gone by the time a summary exists; `min` is min, `max` is max;
  *  - thresholds: ok only if ok on every generator that reported them;
  *  - validity: AND over reporting generators AND every generator reported.
+ *
+ * Identity — the merge also decides whether these summaries are one fleet:
+ *  - HARD (throws, nothing is written): a run_id or schema_version
+ *    disagreement, a summary whose `generator.gen_index` is not its directory
+ *    index, a duplicate index, an index outside the fleet. Any of those means
+ *    the inputs are not N members of one run, so merging them would invent a
+ *    measurement that never happened;
+ *  - SOFT (validity.valid = false with a "fleet members disagree on
+ *    configuration" reason, evidence still merged): generator.gen_count,
+ *    run.active_types or resolved_config disagreement. The fleet ran and its
+ *    numbers are real, they just do not describe one configuration.
+ *    resolved_config is compared canonically (stableStringify), so key order
+ *    never counts as a difference;
+ *  - WARNINGS only: k6_version, rate and thresholds.structural_count.
  */
 export interface GeneratorInput {
   gen_index: number;
@@ -58,11 +72,38 @@ export interface FleetGeneratorEntry {
   reasons: string[];
 }
 
+/**
+ * How much of the fleet the merged timeline.jsonl actually covers. A merged
+ * timeline is the SUM of the per-generator timelines that existed, so one
+ * missing generator makes every bucket under-count without anything in the
+ * file saying so — this block is that statement.
+ *
+ *  - `expected` — generators that reported a summary, i.e. the ones a
+ *    timeline could be expected from; a generator that crashed before
+ *    handleSummary is not counted against coverage.
+ *  - `present` — every generator index whose timeline was found and merged.
+ *  - `missing` — reporting generators with no timeline. `complete` is
+ *    `missing` being empty (with at least one generator expected).
+ *  - `configured_off` — NO generator had a timeline, which is what
+ *    EMIT_TIMELINE=0 or a profile's `emit_timeline: false` looks like after
+ *    the fact: not a gap, an intentional absence, so it raises no warning.
+ */
+export interface TimelineCoverage {
+  expected: number;
+  present: number[];
+  missing: number[];
+  complete: boolean;
+  configured_off: boolean;
+}
+
 export interface FleetSummary extends Omit<RunSummary, 'generator'> {
   generator: { gen_index: null; gen_count: number };
   fleet: {
     generator_count: number;
     generators_reported: number;
+    /** How many generators the merged timeline actually covers; null when the
+     * caller merged summaries without saying anything about timelines. */
+    timeline_coverage: TimelineCoverage | null;
     /** The fleet's verdict as a process exit code — see fleetExitCode. This
      * is the code bin/run.sh exits with in single-task fleet mode, and the
      * one a multi-task orchestrator should use after merging downloaded
@@ -133,6 +174,9 @@ const AGGREGATION: Record<string, string> = {
   'validity.valid': 'AND over reporting generators, AND every generator reported a summary',
   'run.started_at/ended_at': 'earliest start / latest end; duration_sec recomputed from them',
   'payload_sample': `round-robin across generators, capped at ${MAX_PAYLOAD_SAMPLE}`,
+  'fleet.timeline_coverage':
+    'which reporting generators had a timeline.jsonl; the merged timeline is the SUM of those, so a missing ' +
+    'generator makes every bucket under-count — read it before any per-stage conclusion',
 };
 
 type Values = Record<string, number>;
@@ -218,6 +262,41 @@ function mergeTypes(
   return out;
 }
 
+/**
+ * JSON with every object's keys in sorted order, recursively, so two values
+ * that differ only in key order stringify identically. Used to compare
+ * resolved_config across generators: k6 hands each generator the same
+ * configuration, but nothing guarantees the property order survives a
+ * round-trip, and an order-sensitive comparison would call a fleet
+ * misconfigured for a cosmetic difference. No dependency: the repo has none.
+ */
+export function stableStringify(value: unknown): string {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const obj = value as Record<string, unknown>;
+  const parts = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`);
+  return `{${parts.join(',')}}`;
+}
+
+/** The generators whose canonical value for `read` differs from the first
+ * reporting generator's, with both canonical forms so a caller can name them. */
+function compareAcross<T>(
+  reporting: Array<{ gen_index: number; summary: RunSummary }>,
+  read: (s: RunSummary) => T,
+): { first: string; first_gen: number; differing: Array<{ gen_index: number; value: string }> } {
+  const first = stableStringify(read(reporting[0].summary));
+  const differing: Array<{ gen_index: number; value: string }> = [];
+  for (const r of reporting.slice(1)) {
+    const value = stableStringify(read(r.summary));
+    if (value !== first) differing.push({ gen_index: r.gen_index, value });
+  }
+  return { first, first_gen: reporting[0].gen_index, differing };
+}
+
 function checkAgreement<T>(
   reporting: Array<{ gen_index: number; summary: RunSummary }>,
   label: string,
@@ -277,8 +356,37 @@ function entryFor(input: GeneratorInput): FleetGeneratorEntry {
   };
 }
 
-export function mergeSummaries(inputs: GeneratorInput[], gen_count: number): FleetSummary {
+/**
+ * @param timelines  which generator indexes had a timeline.jsonl, as the
+ *   caller found them on disk (src/fleet/cli.ts's readGeneratorDir knows).
+ *   Omit it and `fleet.timeline_coverage` is null — "nobody said".
+ * @param timeline_events_sent  Σ events_sent over the MERGED timeline, when
+ *   one was produced; compared against metrics.events_sent.count to catch a
+ *   truncated timeline (a warning, never an error).
+ */
+export function mergeSummaries(
+  inputs: GeneratorInput[],
+  gen_count: number,
+  timelines?: Record<number, boolean>,
+  timeline_events_sent?: number | null,
+): FleetSummary {
   const sorted = [...inputs].sort((a, b) => a.gen_index - b.gen_index);
+
+  // Hard errors first, before any evidence is read: cli.ts writes nothing on a
+  // throw, and a fleet whose members are not one run is not a measurement.
+  const seen = new Set<number>();
+  for (const i of sorted) {
+    if (seen.has(i.gen_index)) {
+      throw new Error(`duplicate generator index: gen-${i.gen_index} was supplied more than once`);
+    }
+    seen.add(i.gen_index);
+    if (!Number.isInteger(i.gen_index) || i.gen_index < 0 || i.gen_index >= gen_count) {
+      throw new Error(
+        `gen-${i.gen_index} is outside a fleet of ${gen_count} generators (valid indexes 0..${gen_count - 1})`,
+      );
+    }
+  }
+
   const reporting = sorted
     .filter((i): i is GeneratorInput & { summary: RunSummary } => i.summary !== null)
     .map((i) => ({ gen_index: i.gen_index, summary: i.summary }));
@@ -287,15 +395,53 @@ export function mergeSummaries(inputs: GeneratorInput[], gen_count: number): Fle
       `no generator produced a summary.json (exit codes: ${sorted.map((i) => `gen-${i.gen_index}=${i.exit_code ?? 'unknown'}`).join(', ')})`,
     );
   }
+  for (const r of reporting) {
+    if (r.summary.generator.gen_index !== r.gen_index) {
+      throw new Error(
+        `gen-${r.gen_index}'s summary carries generator.gen_index ${r.summary.generator.gen_index}: ` +
+          `it is not this generator's summary`,
+      );
+    }
+  }
+  for (const label of ['schema_version', 'run.run_id'] as const) {
+    const c = compareAcross(reporting, (s) => (label === 'schema_version' ? s.schema_version : s.run.run_id));
+    if (c.differing.length > 0) {
+      throw new Error(
+        `generators disagree on ${label}: gen-${c.first_gen}=${c.first}, ` +
+          `${c.differing.map((d) => `gen-${d.gen_index}=${d.value}`).join(', ')} — these are not one run`,
+      );
+    }
+  }
+
   const warnings: string[] = [];
   const first = reporting[0].summary;
 
-  checkAgreement(reporting, 'run.run_id', (s) => s.run.run_id, warnings);
+  // Soft: the fleet ran, but its members were not configured alike, so the
+  // merged numbers do not describe one configuration. Evidence is still merged.
+  const configReasons: string[] = [];
+  const disagreesOn = (label: string, read: (s: RunSummary) => unknown, withValues: boolean) => {
+    const c = compareAcross(reporting, read);
+    if (c.differing.length === 0) return;
+    configReasons.push(
+      `fleet members disagree on configuration: ${label} differs` +
+        (withValues
+          ? ` (gen-${c.first_gen}=${c.first}, ${c.differing.map((d) => `gen-${d.gen_index}=${d.value}`).join(', ')})`
+          : ` on ${c.differing.map((d) => `gen-${d.gen_index}`).join(', ')} from gen-${c.first_gen}`),
+    );
+  };
+  disagreesOn('run.active_types', (s) => [...s.run.active_types].sort(), true);
+  disagreesOn('resolved_config', (s) => s.resolved_config, false);
+  const wrongCount = reporting.filter((r) => r.summary.generator.gen_count !== gen_count);
+  if (wrongCount.length > 0) {
+    configReasons.push(
+      `fleet members disagree on configuration: generator.gen_count ` +
+        `${wrongCount.map((r) => `gen-${r.gen_index}=${r.summary.generator.gen_count}`).join(', ')} ` +
+        `but ${gen_count} generator directories were merged`,
+    );
+  }
+
   checkAgreement(reporting, 'run.k6_version', (s) => s.run.k6_version, warnings);
-  checkAgreement(reporting, 'run.active_types', (s) => [...s.run.active_types].sort(), warnings);
-  checkAgreement(reporting, 'resolved_config', (s) => s.resolved_config, warnings);
   checkAgreement(reporting, 'rate', (s) => s.rate, warnings);
-  checkAgreement(reporting, 'generator.gen_count', (s) => s.generator.gen_count, warnings);
   checkAgreement(reporting, 'thresholds.structural_count', (s) => s.thresholds.structural_count, warnings);
 
   // run: span
@@ -316,6 +462,42 @@ export function mergeSummaries(inputs: GeneratorInput[], gen_count: number): Fle
       warnings,
       m,
     );
+  }
+
+  // timeline coverage: what the merged timeline.jsonl actually covers
+  let timeline_coverage: TimelineCoverage | null = null;
+  if (timelines) {
+    const present = sorted.filter((i) => timelines[i.gen_index] === true).map((i) => i.gen_index);
+    const missing = reporting.filter((r) => timelines[r.gen_index] !== true).map((r) => r.gen_index);
+    const expected = reporting.length;
+    timeline_coverage = {
+      expected,
+      present,
+      missing,
+      complete: expected > 0 && missing.length === 0,
+      configured_off: present.length === 0,
+    };
+    if (!timeline_coverage.complete && !timeline_coverage.configured_off) {
+      warnings.push(
+        `fleet timeline coverage: ${expected - missing.length} of ${expected} reporting generators shipped a timeline ` +
+          `(missing ${missing.map((g) => `gen-${g}`).join(', ')}); the fleet timeline under-counts by whatever they sent`,
+      );
+    }
+    // Truncation: only comparable when every reporting generator is in the merge.
+    const summaryTotal = metrics.events_sent?.count;
+    if (
+      timeline_coverage.complete &&
+      typeof timeline_events_sent === 'number' &&
+      typeof summaryTotal === 'number' &&
+      summaryTotal > 0 &&
+      timeline_events_sent < 0.9 * summaryTotal
+    ) {
+      warnings.push(
+        `fleet timeline holds ${timeline_events_sent} of the summary's ${summaryTotal} events_sent ` +
+          `(${((timeline_events_sent / summaryTotal) * 100).toFixed(1)}%, less than 90%): the timeline looks truncated, ` +
+          `so per-stage figures under-count even though coverage is complete`,
+      );
+    }
   }
 
   // thresholds: AND per (metric, expression)
@@ -351,6 +533,10 @@ export function mergeSummaries(inputs: GeneratorInput[], gen_count: number): Fle
     if (i.summary === null) {
       reasons.push(`gen-${i.gen_index} produced no summary.json (exit ${i.exit_code ?? 'unknown'})`);
     }
+  }
+  if (configReasons.length > 0) {
+    valid = false;
+    reasons.push(...configReasons);
   }
   const dropped = reporting.reduce((a, r) => a + r.summary.validity.dropped_iterations, 0);
 
@@ -409,6 +595,7 @@ export function mergeSummaries(inputs: GeneratorInput[], gen_count: number): Fle
     fleet: {
       generator_count: gen_count,
       generators_reported: reporting.length,
+      timeline_coverage,
       exit_code: fleetExitCode(sorted),
       generators: sorted.map(entryFor),
       aggregation: { ...AGGREGATION },

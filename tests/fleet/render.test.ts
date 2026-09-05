@@ -53,3 +53,30 @@ describe('renderFleetSummary', () => {
     expect(out).toMatch(/gen-1 produced no summary\.json \(exit 107\)/);
   });
 });
+
+describe('renderFleetSummary — timeline coverage', () => {
+  const two = (timelines?: Record<number, boolean>, sent?: number | null) =>
+    mergeSummaries(
+      [{ gen_index: 0, exit_code: 0, summary: gen(0) }, { gen_index: 1, exit_code: 0, summary: gen(1) }],
+      2,
+      timelines,
+      sent,
+    );
+
+  it('says nothing when the caller merged without timeline information', () => {
+    expect(renderFleetSummary(two())).not.toMatch(/timeline coverage/);
+  });
+
+  it('reports complete coverage', () => {
+    expect(renderFleetSummary(two({ 0: true, 1: true }))).toMatch(/timeline coverage\s+: 2\/2 generators/);
+  });
+
+  it('names the missing generator and says the fleet timeline under-counts', () => {
+    const out = renderFleetSummary(two({ 0: true, 1: false }));
+    expect(out).toMatch(/timeline coverage\s+: 1\/2 generators \(missing gen-1\) — fleet timeline under-counts/);
+  });
+
+  it('says timelines were off rather than missing when no generator had one', () => {
+    expect(renderFleetSummary(two({ 0: false, 1: false }))).toMatch(/timeline coverage\s+: none \(timeline emission off\)/);
+  });
+});
