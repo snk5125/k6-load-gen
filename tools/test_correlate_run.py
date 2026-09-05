@@ -108,20 +108,85 @@ class ComponentDeltaTests(unittest.TestCase):
         self.assertFalse(d["reset"])
         self.assertEqual(d["gaps"], 1)
 
-    def test_vanished_series_reappears_without_double_counting_gap(self):
+    def test_vanished_series_reappears_and_the_rise_across_the_gap_is_credited(self):
+        # REWRITTEN (was test_vanished_series_reappears_without_double_counting_gap,
+        # which asserted received == 0.0). Treating the resumed value as a fresh
+        # baseline threw away a real, KNOWN increment: a Vector counter is
+        # cumulative, so 500 at resumption already includes everything that
+        # happened while the series was missing. 500 - 100 is the honest figure;
+        # discarding it under-counts the stage by the whole gap.
         rows = [
             row(0, http_json={"": {"received": 100.0}}),
             row(15, http_json={}),
             row(30, http_json={}),
-            row(45, http_json={"": {"received": 500.0}}),  # unknown jump during the gap
+            row(45, http_json={"": {"received": 500.0}}),
         ]
         d = cr.component_delta(rows, "http_json", 0, 45)
         self.assertIsNotNone(d)
-        # Only one gap counted (the disappearance); the reappearance is a
-        # fresh baseline, not an extra gap, and contributes no increment.
+        # One gap counted (the disappearance), still reported for the quality note.
         self.assertEqual(d["gaps"], 1)
-        self.assertEqual(d["received"], 0.0)
+        self.assertEqual(d["received"], 400.0)
         self.assertFalse(d["reset"])
+
+    def test_gap_mid_window_does_not_lose_the_increment_across_it(self):
+        # The exact regression: 100, 110, None, 130, 140 must be 40, not 20.
+        rows = [
+            row(0, http_json={"": {"received": 100.0}}),
+            row(15, http_json={"": {"received": 110.0}}),
+            row(30, http_json={}),
+            row(45, http_json={"": {"received": 130.0}}),
+            row(60, http_json={"": {"received": 140.0}}),
+        ]
+        d = cr.component_delta(rows, "http_json", 0, 60)
+        self.assertIsNotNone(d)
+        self.assertEqual(d["received"], 40.0)
+        self.assertEqual(d["gaps"], 1)
+        self.assertFalse(d["reset"])
+
+    def test_single_scrape_gap_credits_the_whole_rise(self):
+        rows = [
+            row(0, http_json={"": {"received": 100.0}}),
+            row(15, http_json={}),
+            row(30, http_json={"": {"received": 130.0}}),
+        ]
+        d = cr.component_delta(rows, "http_json", 0, 30)
+        self.assertIsNotNone(d)
+        self.assertEqual(d["received"], 30.0)
+        self.assertEqual(d["gaps"], 1)
+
+    def test_lower_value_after_a_gap_is_still_a_reset(self):
+        # Resuming BELOW the last known value is the one case that is not a
+        # continuation: the process restarted while the series was missing.
+        rows = [
+            row(0, http_json={"": {"received": 100.0}}),
+            row(15, http_json={}),
+            row(30, http_json={"": {"received": 20.0}}),
+        ]
+        d = cr.component_delta(rows, "http_json", 0, 30)
+        self.assertIsNotNone(d)
+        self.assertEqual(d["received"], 20.0)
+        self.assertTrue(d["reset"])
+        self.assertEqual(d["gaps"], 1)
+
+    def test_one_observation_without_a_baseline_is_unknown_not_zero(self):
+        # A single scrape gives a LEVEL, not an increment. Publishing 0.0 here
+        # reads as "the component handled nothing", which is a different claim.
+        rows = [row(5, http_json={"": {"received": 100.0}})]
+        d = cr.component_delta(rows, "http_json", 0, 15)
+        self.assertIsNotNone(d)
+        self.assertIsNone(d["received"])
+        self.assertTrue(d["lone_scrape"])
+        self.assertIn("received", d["unknown"])
+
+    def test_a_baseline_makes_a_single_in_window_scrape_differenceable(self):
+        rows = [
+            row(-15, http_json={"": {"received": 90.0}}),
+            row(5, http_json={"": {"received": 100.0}}),
+        ]
+        d = cr.component_delta(rows, "http_json", 0, 15)
+        self.assertIsNotNone(d)
+        self.assertEqual(d["received"], 10.0)
+        self.assertFalse(d["lone_scrape"])
 
     def test_two_hosts_one_resetting_other_growth_not_masked(self):
         rows = [
@@ -172,6 +237,45 @@ class ComponentDeltaTests(unittest.TestCase):
         self.assertIsNotNone(d)
         self.assertEqual(d["window"]["scrapes"], 2)
         self.assertEqual(d["received"], 10.0)
+        # No baseline, so the covered span is the stage's own length here.
+        self.assertEqual(d["window_sec"], 15.0)
+        self.assertEqual(d["nominal_sec"], 15.0)
+
+    def test_rate_denominator_is_the_span_the_increments_actually_cover(self):
+        # The baseline sits 15 s BEFORE the stage, so the counted increment
+        # (90 -> 110) spans 30 s, not the stage's nominal 15 s. Dividing 20
+        # events by 15 s would claim 1.33/s for work that took 30 s.
+        rows = [
+            row(-15, http_json={"": {"received": 90.0}}),
+            row(0, http_json={"": {"received": 100.0}}),
+            row(15, http_json={"": {"received": 110.0}}),
+        ]
+        d = cr.component_delta(rows, "http_json", 0, 15)
+        self.assertIsNotNone(d)
+        self.assertEqual(d["received"], 20.0)
+        self.assertEqual(d["window_sec"], 30.0)      # baseline ts .. last in-window ts
+        self.assertEqual(d["nominal_sec"], 15.0)     # the stage's own seconds, kept separately
+        self.assertEqual(d["window"]["seconds"], 30.0)
+
+    def test_summarize_stage_divides_received_by_the_covered_span(self):
+        rows = [
+            row(-15, http_json={"": {"received": 90.0}}),
+            row(0, http_json={"": {"received": 100.0}}),
+            row(15, http_json={"": {"received": 110.0}}),
+        ]
+        st = {"buckets": [bucket("1970-01-01T00:00:00Z", bucket_sec=15)]}
+        out = cr.summarize_stage(st, rows, {"source": "http_json"}, None, None)
+        src = out["aggregator"]["source"]
+        self.assertEqual(src["received"], 20.0)
+        self.assertAlmostEqual(src["received_per_sec"], 20.0 / 30.0)
+
+    def test_span_of_a_single_scrape_stage_does_not_divide_by_zero(self):
+        rows = [row(5, http_json={"": {"received": 100.0}})]
+        d = cr.component_delta(rows, "http_json", 0, 15)
+        self.assertEqual(d["window_sec"], 0.0)
+        st = {"buckets": [bucket("1970-01-01T00:00:00Z", bucket_sec=15)]}
+        out = cr.summarize_stage(st, rows, {"source": "http_json"}, None, None)
+        self.assertNotIn("received_per_sec", out["aggregator"]["source"])
 
 
 
@@ -234,19 +338,57 @@ class ParseInstantTests(unittest.TestCase):
 
 
 class StartReferenceTests(unittest.TestCase):
-    def test_run_start_at_wins_and_carries_the_lateness_as_uncertainty(self):
+    def test_grid_anchors_on_the_actual_start_not_the_scheduled_instant(self):
+        # REWRITTEN (was test_run_start_at_wins_and_carries_the_lateness_as_uncertainty,
+        # which asserted epoch == run.start_at). Anchoring the intended grid on the
+        # SCHEDULED instant is what produced the bug: the stages actually ran from
+        # when the generators began, so a fleet that came up after START_AT had every
+        # row labelled with the wrong stage and the wrong "eps offered". start_at now
+        # only reports lateness and widens uncertainty; it is never the origin.
         summary = {
-            "run": {"started_at": "2026-09-05T14:00:03Z", "start_at": REF},
+            "run": {"started_at": "2026-09-05T14:00:02Z", "start_at": REF},
             "fleet": {"generators": [
                 {"started_at": "2026-09-05T14:00:02Z"},
                 {"started_at": "2026-09-05T14:00:05Z"},
             ]},
         }
         ref = cr.start_reference(summary)
+        self.assertEqual(ref["epoch"], cr.parse_iso("2026-09-05T14:00:02Z"))
+        self.assertIn("fleet.generators", ref["source"])
+        # Uncertainty is the OBSERVED skew between first and last generator.
+        self.assertEqual(ref["uncertainty_sec"], 3.0)
+        # start_at survives only as a report of how late the fleet was.
+        self.assertEqual(ref["lateness_sec"], 2.0)
+
+    def test_a_late_fleet_is_anchored_where_it_really_began(self):
+        # START_AT was already 5 minutes past when the tasks came up. The old
+        # code laid the grid at 14:00:00 and shifted every stage by 300 s.
+        summary = {
+            "run": {"started_at": "2026-09-05T14:05:00Z", "start_at": REF},
+            "fleet": {"generators": [{"started_at": "2026-09-05T14:05:00Z"}]},
+        }
+        ref = cr.start_reference(summary)
+        self.assertEqual(ref["epoch"], cr.parse_iso("2026-09-05T14:05:00Z"))
+        self.assertEqual(ref["lateness_sec"], 300.0)
+        self.assertEqual(ref["uncertainty_sec"], 0.0)
+
+    def test_start_at_later_than_the_actual_start_is_impossible_and_adds_uncertainty(self):
+        # A generator cannot begin before the instant it was told to wait for, so
+        # this means the clocks disagree; the discrepancy becomes uncertainty.
+        summary = {
+            "run": {"started_at": "2026-09-05T13:59:56Z", "start_at": REF},
+            "fleet": {"generators": [{"started_at": "2026-09-05T13:59:56Z"}]},
+        }
+        ref = cr.start_reference(summary)
+        self.assertEqual(ref["epoch"], cr.parse_iso("2026-09-05T13:59:56Z"))
+        self.assertEqual(ref["lateness_sec"], -4.0)
+        self.assertEqual(ref["uncertainty_sec"], 4.0)
+
+    def test_start_at_is_the_origin_only_when_no_actual_start_exists(self):
+        ref = cr.start_reference({"run": {"started_at": "unknown", "start_at": REF}})
         self.assertEqual(ref["epoch"], REF_EPOCH)
         self.assertIn("run.start_at", ref["source"])
-        # The last generator was 5 s late against the instant it was given.
-        self.assertEqual(ref["uncertainty_sec"], 5.0)
+        self.assertIsNone(ref["lateness_sec"])
 
     def test_without_start_at_a_fleet_uses_its_earliest_generator_start(self):
         summary = {
@@ -264,8 +406,10 @@ class StartReferenceTests(unittest.TestCase):
     def test_single_generator_falls_back_to_run_started_at(self):
         ref = cr.start_reference({"run": {"started_at": REF, "start_at": None}})
         self.assertEqual(ref["epoch"], REF_EPOCH)
-        self.assertEqual(ref["source"], "run.started_at")
+        self.assertIn("run.started_at", ref["source"])
+        self.assertIn("actually began", ref["source"])
         self.assertEqual(ref["uncertainty_sec"], 0.0)
+        self.assertIsNone(ref["lateness_sec"])
 
     def test_none_when_nothing_usable(self):
         self.assertIsNone(cr.start_reference({"run": {"started_at": "unknown"}}))
@@ -395,6 +539,108 @@ class StagesFromScheduleTests(unittest.TestCase):
         self.assertEqual(groups[0]["boundary_buckets"], 1)  # the 14:00:22 bucket
 
 
+class SummarizeStageQualityTests(unittest.TestCase):
+    """The unknown/zero distinction has to survive into the row and the note:
+    a counter Vector never emitted is a real zero, one it emitted only once is
+    unknown, and the reader must be able to tell which they are looking at."""
+
+    STAGE = {"buckets": [bucket("1970-01-01T00:00:00Z", bucket_sec=15)]}
+
+    def test_a_series_never_emitted_is_reported_as_zero(self):
+        # Vector only exposes errors once something has errored, so an absent
+        # errors series across a scraped window means none happened.
+        rows = [
+            row(0, http_json={"": {"received": 100.0}}),
+            row(15, http_json={"": {"received": 110.0}}),
+        ]
+        out = cr.summarize_stage(self.STAGE, rows, {"source": "http_json"}, None, None)
+        src = out["aggregator"]["source"]
+        self.assertEqual(src["errors"], 0.0)
+        self.assertEqual(src["discarded"], 0.0)
+        self.assertEqual(out["quality"], [])
+
+    def test_a_series_seen_once_is_unknown_and_noted_not_zeroed(self):
+        rows = [row(5, http_json={"": {"received": 100.0, "errors": 3.0}})]
+        out = cr.summarize_stage(self.STAGE, rows, {"source": "http_json"}, None, None)
+        src = out["aggregator"]["source"]
+        self.assertIsNone(src["received"])
+        # errors WAS exposed, so it is unknown rather than a confident zero.
+        self.assertIsNone(src["errors"])
+        # discarded never appeared at all, so it stays a genuine zero.
+        self.assertEqual(src["discarded"], 0.0)
+        self.assertTrue(out["quality"])
+        self.assertTrue(out["quality"][0]["lone"])
+
+    def test_the_markdown_says_one_scrape_in_window(self):
+        report = {
+            "run": {"run_id": "r", "started_at": None, "ended_at": None, "duration_sec": 0,
+                    "artifact": "gen-0", "generators": 1, "generators_reported": 1, "exit_code": 0},
+            "config": {"profile": "p", "transport": "http", "types": {}, "active_types": []},
+            "validity": {"valid": True, "dropped_iterations": 0, "reasons": []},
+            "thresholds_failed": [], "rate": {"requested_eps": 1, "achieved_eps": 1},
+            "totals": {"events_attempted": 1, "events_sent": 1, "send_failure_rate": 0, "send_duration_ms": {}},
+            "warnings": [], "knee": None, "alignment": None, "timeline_coverage": None,
+            "scrapes": {"file": None, "count": 1, "first": None, "last": None},
+            "cloudwatch": {"cluster": None, "service": None, "points": 0},
+            "stages": [{
+                "start": "1970-01-01T00:00:00Z", "seconds": 15, "buckets": 1,
+                "generator": {"eps_delivered": 0, "events_sent": 0, "events_attempted": 0,
+                              "send_p99_ms_max": None, "send_p99_ms_median": None,
+                              "failure_rate": 0.0, "dropped_iterations": 0},
+                "aggregator": {}, "stage": 0,
+                "quality": [{"role": "source", "component": "http_json",
+                             "reset": False, "gaps": 0, "lone": True}],
+            }],
+        }
+        md = cr.render(report)
+        self.assertIn("one scrape in window: counters unknown", md)
+
+
+class GridTooFineTests(unittest.TestCase):
+    """A timeline bucket is the smallest unit the report has. A stage shorter
+    than one cannot own a bucket, so the bucket would be credited whole to a
+    neighbouring stage and the short stage would vanish from the table."""
+
+    SHORT = {
+        "json-app": {
+            "executor": "ramping-arrival-rate", "duration_scale": 1, "gen_count": 2, "batch_size": 100,
+            "stages": [
+                {"target_iterations_per_sec": 5, "target_eps_fleet": 1000, "duration_sec": 10},
+                {"target_iterations_per_sec": 20, "target_eps_fleet": 4000, "duration_sec": 60},
+            ],
+        }
+    }
+
+    def test_a_stage_shorter_than_the_bucket_width_refuses_the_grid(self):
+        stages, _ = cr.schedule_grid(self.SHORT)
+        note = cr.grid_too_fine(stages, [bucket("2026-09-05T14:00:00Z", bucket_sec=15)])
+        self.assertIsNotNone(note)
+        self.assertIn("shorter than", note)
+        self.assertIn("heuristic", note)
+
+    def test_a_grid_whose_stages_all_reach_the_bucket_width_is_kept(self):
+        stages, _ = cr.schedule_grid(SCHEDULE)
+        self.assertIsNone(cr.grid_too_fine(stages, [bucket("2026-09-05T14:00:00Z", bucket_sec=15)]))
+
+    def test_a_stage_exactly_one_bucket_long_is_still_usable(self):
+        exact = {"json-app": dict(self.SHORT["json-app"],
+                                  stages=[{"target_iterations_per_sec": 5, "target_eps_fleet": 1000, "duration_sec": 15},
+                                          {"target_iterations_per_sec": 20, "target_eps_fleet": 4000, "duration_sec": 60}])}
+        stages, _ = cr.schedule_grid(exact)
+        self.assertIsNone(cr.grid_too_fine(stages, [bucket("2026-09-05T14:00:00Z", bucket_sec=15)]))
+
+    def test_the_widest_bucket_in_the_timeline_sets_the_bar(self):
+        stages, _ = cr.schedule_grid(SCHEDULE)  # stages are 30 s and 60 s
+        wide = [bucket("2026-09-05T14:00:00Z", bucket_sec=15),
+                bucket("2026-09-05T14:00:15Z", bucket_sec=45)]
+        self.assertIsNotNone(cr.grid_too_fine(stages, wide))
+
+    def test_no_grid_or_no_buckets_is_not_a_refusal(self):
+        stages, _ = cr.schedule_grid(SCHEDULE)
+        self.assertIsNone(cr.grid_too_fine(None, [bucket("2026-09-05T14:00:00Z")]))
+        self.assertIsNone(cr.grid_too_fine(stages, []))
+
+
 class AlignmentLinesTests(unittest.TestCase):
     def test_schedule_alignment_states_its_source_and_precision(self):
         lines = cr.alignment_lines({"stages_from": "schedule", "reference": REF,
@@ -406,10 +652,26 @@ class AlignmentLinesTests(unittest.TestCase):
         self.assertIn("±2.5s", joined)
         self.assertIn("eps offered", joined)
 
+    def test_alignment_reports_lateness_without_moving_the_anchor(self):
+        lines = cr.alignment_lines({"stages_from": "schedule", "reference": REF,
+                                    "reference_source": "earliest fleet.generators[].started_at (when the fleet actually began)",
+                                    "uncertainty_sec": 1.0, "note": None,
+                                    "lateness_sec": 300.0, "start_at": REF})
+        joined = " ".join(lines)
+        self.assertIn("300.0s", joined)
+        self.assertIn("ACTUAL start", joined)
+
+    def test_no_lateness_line_when_the_run_was_not_scheduled(self):
+        lines = cr.alignment_lines({"stages_from": "schedule", "reference": REF,
+                                    "reference_source": "run.started_at (when the generator actually began)",
+                                    "uncertainty_sec": 0.0, "note": None, "lateness_sec": None})
+        self.assertNotIn("scheduled START_AT", " ".join(lines))
+
     def test_heuristic_alignment_is_labelled_as_such(self):
         lines = cr.alignment_lines({"stages_from": "heuristic", "note": "this artifact predates the `schedule` field"})
         self.assertEqual(len(lines), 1)
-        self.assertIn("stage boundaries inferred from delivered EPS (heuristic; older artifact)", lines[0])
+        self.assertIn("stage boundaries inferred from delivered EPS (heuristic", lines[0])
+        self.assertNotIn("older artifact", lines[0])
         self.assertIn("predates", lines[0])
 
     def test_nothing_to_say_without_stages(self):

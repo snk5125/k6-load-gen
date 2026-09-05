@@ -511,15 +511,43 @@ the CPU at that point.
 **Where the stage boundaries come from.** When the summary carries a `schedule` (§3.0), the stages
 are the run's own **intended** stages: each stage's `duration_sec` accumulated from a start
 reference, with every timeline bucket assigned to the stage containing the bucket's start. The
-`eps offered` column is that stage's `target_eps_fleet`, printed beside `eps delivered`. The start
-reference is `run.start_at` when the run was scheduled with `START_AT` — one instant the whole
-fleet shared — and otherwise the earliest of `fleet.generators[].started_at` (single generator:
-`run.started_at`). Because generators do not all begin exactly on that instant, the report states a
-boundary precision (`±N s`) and marks each stage's straddling buckets in the `sched` column as
-`(+Nb)`: a straddling bucket holds two different offered rates, so its delivered EPS belongs
-cleanly to neither stage. Buckets that fall outside the schedule entirely (an overrun) form their
-own row with `sched` `-` and no offered eps. k6 ramps linearly within a stage, so a bucket carries
-a stage index and never a "ramp"/"hold" label.
+`eps offered` column is that stage's `target_eps_fleet`, printed beside `eps delivered`.
+
+The reference is the **actual** start, never the scheduled one: the earliest of
+`fleet.generators[].started_at`, or `run.started_at` for a single generator. `run.start_at` — the
+instant `START_AT` told every generator to begin — is deliberately **not** the grid origin.
+`bin/run.sh` sleeps until `START_AT` and k6 then takes its own time to initialise, and a fleet
+whose tasks only came up after that instant has already missed it; anchoring there would shift
+every boundary by the lateness and give every row the wrong stage index and the wrong `eps
+offered`. A fleet that started five minutes late would have its whole run labelled as falling
+outside the schedule. `start_at` survives in two roles only:
+
+- **lateness**, reported as `alignment.lateness_sec` and as a line in the report (`the fleet began
+  +300.0s against its scheduled START_AT ...`) — stated, never applied;
+- **extra uncertainty** when `start_at` is *later* than the observed start. A generator cannot begin
+  before the instant it is waiting for, so that ordering is impossible and means the two clocks
+  disagree; the discrepancy widens the boundary precision.
+
+Only an artifact with no usable `started_at` at all falls back to `start_at` as the origin, and the
+`reference_source` line says which was used.
+
+Because generators do not all begin at the same moment, the report states a boundary precision
+(`±N s`) — the observed spread between the first and last generator to start, widened as above —
+and marks each stage's straddling buckets in the `sched` column as `(+Nb)`: a straddling bucket
+holds two different offered rates, so its delivered EPS belongs cleanly to neither stage. Buckets
+that fall outside the schedule entirely (an overrun) form their own row with `sched` `-` and no
+offered eps. k6 ramps linearly within a stage, so a bucket carries a stage index and never a
+"ramp"/"hold" label.
+
+**A stage shorter than a timeline bucket refuses the grid.** A bucket is the smallest unit the
+report has, and each one is credited to the single stage containing its start. A stage shorter than
+`bucket_sec` therefore cannot own a bucket: the bucket spans the short stage entirely, is credited
+whole to whichever neighbour contains the bucket's start, and the short stage vanishes from the
+table while its traffic is silently added to a stage that never offered it. When **any** stage in
+the grid is shorter than the widest bucket in the timeline, the report declines the schedule grid
+altogether, says so, and falls back to the labelled delivered-EPS heuristic below — an inference
+the reader can see and discount, rather than a precise-looking attribution that is wrong. Lengthen
+the stages or shorten `bucket_sec` if you need per-stage attribution for a fine schedule.
 
 Only an artifact with **no** `schedule` falls back to the old behaviour — grouping consecutive
 buckets whose delivered EPS stays within 15% — and the report then says `stage boundaries inferred
@@ -533,12 +561,30 @@ the alignment note. When the active types' boundaries differ, no single grid can
 so the report falls back to the heuristic and says why. Run one type at a time (`TYPES=`) when you
 need per-type stage attribution.
 
-Aggregator counts are the sum of positive increments across the consecutive scrapes covering each
-stage rather than a plain endpoint subtraction, so a Vector counter reset (process restart mid-run)
-is counted from its post-reset value instead of going negative, and a component that briefly
-vanishes from a scrape contributes an unknown — not zero — increment for that gap. Both are flagged
-per stage as `quality` (`reset` / `gaps`) in the JSON and as a "stage N quality" note in the
-Markdown.
+Aggregator counts are the sum of increments across the consecutive scrapes covering each stage
+rather than a plain endpoint subtraction, so a Vector counter reset (process restart mid-run) is
+counted from its post-reset value instead of going negative. The scrapes covering a stage are every
+scrape inside it **plus the one immediately before it**, used as the differencing baseline.
+
+**Rates divide by the span the increments cover, not by the stage's length.** Because that baseline
+scrape sits before the stage begins, the counted increment spans from the baseline's timestamp to
+the last in-stage scrape's — up to one scrape interval more than the stage itself. `received_per_sec`
+and every other per-second figure divide by that real span, reported per stage as `window.seconds`
+alongside `window.from` / `window.to` / `window.scrapes`; the stage's own length is kept separately
+as `nominal_sec`. Dividing by the nominal length would inflate every rate by the baseline overhang.
+
+**Gaps and single scrapes.** A component that vanishes from a scrape and comes back has not lost an
+increment: these counters are cumulative, so the value at resumption already includes whatever
+happened while the series was missing, and the whole rise from the last known value to the resumed
+one is credited. (Treating the resumption as a fresh baseline lost the increment both across the
+gap and out of it — `100, 110, -, 130, 140` came to 20 instead of 40.) A resumed value *below* the
+last known one is the one case that is not a continuation: that is a restart, counted as a reset.
+The gap itself is still recorded either way. Separately, a series observed only **once** in the
+window cannot be differenced at all — one observation is a level, not an increment — so its counter
+is reported unknown (`-`), never as a confident `0`; a counter Vector never emitted at all does
+still read as a genuine `0`, since Vector only exposes `errors`/`discarded` once something has been
+counted. All of these are flagged per stage as `quality` (`reset` / `gaps` / `lone`) in the JSON
+and as a "stage N quality" note in the Markdown.
 
 ## 9. Glossary
 
