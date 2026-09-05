@@ -40,6 +40,13 @@ jobs:
       - name: Test
         run: npm test
 
+      # tools/correlate_run.py is stdlib-only Python, outside the npm/vitest
+      # world above — its own gate so a regression in counter-reset/gap
+      # handling (or parse_prom's per-host keying) doesn't slip through
+      # unnoticed just because it lives in tools/ instead of src/.
+      - name: Python unit tests (tools/correlate_run.py)
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+
       # A definition change that does not regenerate leaves stale configs
       # committed — which is exactly the drift this sub-project exists to
       # prevent. Regenerate and fail if anything moved.
