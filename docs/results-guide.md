@@ -102,7 +102,7 @@ depends on the metric kind:
 
 | Metric | Kind | Fields | Read |
 |---|---|---|---|
-| `events_attempted`, `events_sent`, `wire_bytes`, `send_errors`, `dropped_iterations` | Counter | `count`, `rate` | `count` is the total; `rate` is per second over the run |
+| `events_attempted`, `events_sent`, `events_rejected`, `wire_bytes`, `send_errors`, `dropped_iterations` | Counter | `count`, `rate` | `count` is the total; `rate` is per second over the run |
 | `send_failures` | Rate | `rate`, `passes`, `fails` | `passes` = failed sends, `fails` = successful sends; `rate` = passes/(passes+fails) = share of sends that failed (0..1); a send is one batch, not one event |
 | `send_duration` | Trend | `avg`, `min`, `med`, `max`, `p(90)`, `p(95)`, `p(99)` | milliseconds per send (one batch); on a fleet, see §4 |
 
@@ -112,17 +112,44 @@ Also present: k6's own metrics (`iterations`, `vus`, `data_sent`, `http_req_*` o
 
 Meaning of the project metrics: a **send** is one iteration delivering one batch of
 `batch_size` events. `events_attempted` counts events in every batch tried;
-`events_sent` counts events in batches the target acknowledged; `send_errors` counts failed
+`events_sent` counts events the target ACCEPTED; `events_rejected` counts events the target
+took the request for and then refused; `send_errors` counts failed
 batches; `wire_bytes` is bytes on the wire as the transport could observe them.
+
+**`events_rejected` and OTLP partial success.** Only the two OTLP transports can produce a
+non-zero `events_rejected`. An OTLP receiver may answer `200`/`StatusOK` and still refuse part
+of the batch, in an `ExportLogsServiceResponse.partial_success` block naming how many log
+records it dropped. Those records are NOT in `events_sent`, and a batch with any rejection
+counts as a failed send: it raises `send_failures` and `send_errors` by one, exactly like a
+transport error. So:
+
+- `events_sent + events_rejected <= events_attempted` — a batch that failed outright (a 5xx,
+  a refused connection) contributes to neither.
+- A run with a high `send_failures` rate but a low `send_errors`-to-`events_rejected` ratio is
+  a receiver dropping records, not a network fault. Read `events_rejected` first, then the
+  warning text in the run log (`OTLP partial success: N of M log records rejected — <the
+  receiver's own message>`), which usually names the limit that was hit.
+- **`events_rejected: 0` on an OTLP run is a real measurement**, not an absence: it means the
+  receiver acknowledged every record. Non-OTLP transports (`hec`, `syslog`, `null`) have no
+  partial-acknowledgement shape at all and always report 0.
+- A receiver that reports a rejection count larger than the batch, or one that is not a
+  non-negative integer, is treated as a whole-batch failure and neither count is attributed —
+  the warning text begins `malformed OTLP response`.
+- A `partial_success` whose count is **zero** but which still carries a message is an advisory
+  about the request, not a rejection. The run logs `send advisory #N (batch accepted in full)`
+  and nothing is counted as failed.
 
 ### 3.2 `types`
 
 One entry per type in `run.active_types`, each with `events_attempted`, `events_sent`,
-`send_failures` (a rate, 0..1), `send_duration` (the Trend object), `wire_bytes`, `send_errors`.
+`events_rejected`, `send_failures` (a rate, 0..1), `send_duration` (the Trend object),
+`wire_bytes`, `send_errors`.
 
 - **`null` means not measured**, not zero: no sub-metric reached the summary for that type.
 - **`wire_bytes: null` is normal** for `otlp-grpc` (k6 cannot see the encoded size) and for
   `hec` with gzip on. It never means zero bytes were sent.
+- **`events_rejected`** is the per-type share of the OTLP partial-success rejections described
+  in §3.1. `0` means the receiver refused nothing for that type; `null` means not measured.
 - On a fleet, counts are summed; `send_failures` is the worst generator; `send_duration` follows §4.
 
 ### 3.3 `warnings`

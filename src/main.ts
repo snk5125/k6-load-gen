@@ -11,6 +11,7 @@ import { buildSummary, MAX_PAYLOAD_SAMPLE } from './summary/build.ts';
 import { renderSummary } from './summary/render.ts';
 import {
   eventsAttempted,
+  eventsRejected,
   eventsSent,
   sendDuration,
   sendErrors,
@@ -153,6 +154,12 @@ const PAYLOAD_SAMPLE = run.active_types.flatMap((type) =>
 const LOG_FIRST = 10;
 const LOG_EVERY = 1000;
 let errorCount = 0;
+// Advisories (an OTLP receiver that accepted everything but still said
+// something — see src/transports/otlp-partial.ts) are bounded SEPARATELY
+// from failures, and by the same LOG_FIRST/LOG_EVERY rule. A shared counter
+// would let a chatty-but-healthy receiver consume the whole failure budget
+// and hide the first real error behind ten deprecation notices.
+let advisoryCount = 0;
 let connected = false;
 
 // ------------------------------------------------------------------ VU context
@@ -185,13 +192,37 @@ export default async function (): Promise<void> {
   eventsAttempted.add(batch.length);
   sendFailures.add(!res.ok);
 
+  // events_sent counts what the target ACCEPTED, not what we handed it. For
+  // every transport but OTLP those are the same number on a successful
+  // send; OTLP can accept a request and refuse part of its records on a
+  // 200/StatusOK (src/transports/otlp-partial.ts), and counting those as
+  // sent published a 100%-delivery run against a collector dropping half of
+  // every batch. `null` means the counts are not attributable (the batch
+  // failed as a whole, or the response was malformed) — never zero.
+  if (res.accepted !== null && res.accepted > 0) eventsSent.add(res.accepted);
+  if (res.rejected !== null && res.rejected > 0) eventsRejected.add(res.rejected);
+  // Counted whenever it was observed, INCLUDING on a partial rejection:
+  // those bytes really did leave this generator, and dropping them would
+  // under-report the load actually offered. Failures still report null.
+  if (res.wire_bytes !== null) wireBytes.add(res.wire_bytes);
+
   if (res.ok) {
-    eventsSent.add(batch.length);
-    if (res.wire_bytes !== null) wireBytes.add(res.wire_bytes);
+    if (res.advisory) {
+      advisoryCount++;
+      if (advisoryCount <= LOG_FIRST || advisoryCount % LOG_EVERY === 0) {
+        console.warn(`send advisory #${advisoryCount} (batch accepted in full): ${res.advisory}`);
+      }
+    }
     return;
   }
 
-  connected = false; // force a reconnect on the next iteration
+  // A PARTIAL rejection is a receiver-side verdict on the records, not a
+  // broken connection: the request completed. Forcing a reconnect here
+  // would turn a collector's ingest limit into a reconnect storm — and for
+  // otlp-grpc, connect() on an already-connected client is exactly the
+  // wrong response to a healthy RPC.
+  const partiallyRejected = res.rejected !== null && res.rejected > 0;
+  if (!partiallyRejected) connected = false; // force a reconnect on the next iteration
   sendErrors.add(1);
   errorCount++;
   if (errorCount <= LOG_FIRST || errorCount % LOG_EVERY === 0) {

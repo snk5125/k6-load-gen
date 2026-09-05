@@ -67,11 +67,33 @@ export const createHecTransport: TransportFactory = (cfg) => {
           // length. Reporting the uncompressed figure as wire size would be
           // exactly the "confident wrong number" this project's SendResult
           // contract exists to prevent, so report null instead.
-          return { ok: true, status: res.status, wire_bytes: gzip ? null : body.length };
+          // HEC has no partial-acknowledgement shape: a 200 means the
+          // whole batch was taken (unlike OTLP — see otlp-partial.ts).
+          return {
+            ok: true,
+            status: res.status,
+            wire_bytes: gzip ? null : body.length,
+            accepted: events.length,
+            rejected: 0,
+          };
         }
-        return { ok: false, status: res.status, wire_bytes: null, error: classification.error };
+        return {
+          ok: false,
+          status: res.status,
+          wire_bytes: null,
+          accepted: null,
+          rejected: null,
+          error: classification.error,
+        };
       } catch (err) {
-        return { ok: false, status: 'exception', wire_bytes: null, error: String(err) };
+        return {
+          ok: false,
+          status: 'exception',
+          wire_bytes: null,
+          accepted: null,
+          rejected: null,
+          error: String(err),
+        };
       }
     },
     async close() {

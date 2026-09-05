@@ -20,7 +20,14 @@ export const createNullTransport: TransportFactory = (cfg) => {
       // null, not 0, when counting is off: the field distinguishes "not
       // observed" from "zero bytes", and a confident 0 would be added to the
       // wire_bytes counter as if it had been measured.
-      return { ok: true, status: 200, wire_bytes: countBytes ? bytes : null };
+      // A discard sink refuses nothing: the whole batch is accepted.
+      return {
+        ok: true,
+        status: 200,
+        wire_bytes: countBytes ? bytes : null,
+        accepted: events.length,
+        rejected: 0,
+      };
     },
     async close() {
       /* nothing to release */

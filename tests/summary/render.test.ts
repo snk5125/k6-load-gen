@@ -41,9 +41,10 @@ describe('renderSummary — structural thresholds kept out of the verdict block'
         ...structuralMetricsFor('cloudtrail'),
       },
     });
-    expect(s.thresholds.structural_count).toBe(12);
+    const perType = Object.keys(STRUCTURAL_EXPRESSIONS).length;
+    expect(s.thresholds.structural_count).toBe(perType * 2);
     const out = renderSummary(s);
-    expect(out).toMatch(/structural thresholds\s*:\s*12/);
+    expect(out).toMatch(new RegExp(`structural thresholds\\s*:\\s*${perType * 2}`));
     // Not swamped: the individual structural expressions never appear as
     // their own lines (they would if this fell through to the old
     // one-line-per-threshold rendering).
@@ -63,7 +64,9 @@ describe('renderSummary — structural thresholds kept out of the verdict block'
       },
     });
     const out = renderSummary(s);
-    expect(out).toMatch(/structural thresholds\s*:\s*6/);
+    expect(out).toMatch(
+      new RegExp(`structural thresholds\\s*:\\s*${Object.keys(STRUCTURAL_EXPRESSIONS).length}`),
+    );
     expect(out).toMatch(/FAILED THRESHOLDS/);
     expect(out).toMatch(/send_failures rate<0\.001/);
   });
@@ -83,6 +86,38 @@ describe('renderSummary — structural thresholds kept out of the verdict block'
     expect(out).toMatch(/PER-TYPE BREAKDOWN/);
     expect(out).toMatch(/auditd:.*sent=500/);
     expect(out).toMatch(/cloudtrail:.*sent=21/);
+  });
+
+  it('shows rejected events in the header and per-type line when the receiver refused some', () => {
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: {
+        events_attempted: { values: { count: 100 } },
+        events_sent: { values: { count: 93 } },
+        events_rejected: { values: { count: 7 } },
+        'events_attempted{scenario:auditd}': { values: { count: 100 } },
+        'events_sent{scenario:auditd}': { values: { count: 93 } },
+        'events_rejected{scenario:auditd}': { values: { count: 7 } },
+      },
+    });
+    const out = renderSummary(s);
+    expect(out).toMatch(/events rejected\s*:\s*7/);
+    expect(out).toMatch(/auditd:.*rejected=7/);
+  });
+
+  it('keeps the per-type line free of a rejected= field when nothing was rejected', () => {
+    // The overwhelmingly common case. A `rejected=0` on every line would be
+    // noise, and a `rejected=null` on a merged fleet summary (whose
+    // TypeSummary does not carry the field yet) would read as a defect.
+    const s = buildSummary({
+      ...base,
+      active_types: ['auditd'],
+      metrics: { 'events_sent{scenario:auditd}': { values: { count: 500 } } },
+    });
+    const out = renderSummary(s);
+    expect(out).toMatch(/auditd:.*sent=500/);
+    expect(out).not.toMatch(/rejected=/);
   });
 
   it('omits the per-type block entirely when no types are active', () => {

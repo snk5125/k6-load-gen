@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import type { SendResult, TransportFactory } from './types.ts';
 import { buildResourceLogs } from './otlp-payload.ts';
-import { classifyHttpResponse } from './http-response.ts';
+import { classifyOtlpHttpResponse } from './otlp-partial.ts';
 
 export const createOtlpHttpTransport: TransportFactory = (cfg) => {
   const endpoint = cfg.endpoint;
@@ -38,21 +38,36 @@ export const createOtlpHttpTransport: TransportFactory = (cfg) => {
         const res = http.post(url, body, {
           headers: { 'Content-Type': 'application/json', ...extraHeaders },
         });
-        const classification = classifyHttpResponse(res.status, res.body, res.error);
-        if (classification.ok) {
+        // A 200 is NOT proof the batch arrived whole: OTLP puts a
+        // `partial_success` block in the success body when the receiver
+        // refused some of the records. classifyOtlpHttpResponse reads it
+        // (and still handles every plain HTTP failure, via
+        // classifyHttpResponse) — see src/transports/otlp-partial.ts.
+        const c = classifyOtlpHttpResponse(res.status, res.body, res.error, events.length);
+        return {
+          ok: c.ok,
+          status: res.status,
           // Unlike gRPC, the HTTP body size is the wire size we sent, as a
           // metric — body.length is UTF-16 code units, not a measured UTF-8
           // byte count (same caveat as syslog.ts's wire_bytes; see there).
-          return { ok: true, status: res.status, wire_bytes: body.length };
-        }
-        return {
-          ok: false,
-          status: res.status,
-          wire_bytes: null,
-          error: classification.error,
+          // Reported on a PARTIAL success too: those bytes really did go
+          // out, and refusing to count them would under-report the load
+          // this generator actually offered.
+          wire_bytes: c.accepted === null ? null : body.length,
+          accepted: c.accepted,
+          rejected: c.rejected,
+          error: c.error,
+          advisory: c.advisory,
         };
       } catch (err) {
-        return { ok: false, status: 'exception', wire_bytes: null, error: String(err) };
+        return {
+          ok: false,
+          status: 'exception',
+          wire_bytes: null,
+          accepted: null,
+          rejected: null,
+          error: String(err),
+        };
       }
     },
     async close() {
