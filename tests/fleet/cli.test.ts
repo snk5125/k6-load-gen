@@ -114,9 +114,33 @@ describe('src/fleet/cli.ts merge (spawned as a process)', () => {
     const r = run(['merge', out, a, b]);
     expect(r.status, r.stderr).toBe(0);
     const f = JSON.parse(readFileSync(join(out, 'summary.json'), 'utf8'));
-    expect(f.fleet.timeline_coverage).toEqual({ expected: 2, present: [0], missing: [1], complete: false, configured_off: false });
+    expect(f.fleet.timeline_coverage).toEqual({ expected: 2, present: [0], missing: [1], complete: false, configured_off: false, orphan_timelines: [] });
     expect(f.warnings.join(' ')).toMatch(/timeline coverage.*gen-1/);
     expect(r.stdout).toMatch(/timeline coverage\s+: 1\/2 generators \(missing gen-1\)/);
+  });
+
+  it('does NOT merge a timeline from a generator that produced no summary', () => {
+    // bin/run.sh buckets whatever raw.json it finds, so a k6 killed after
+    // writing raw.json but before handleSummary leaves a timeline beside no
+    // summary. Summing it in inflates every bucket against summary totals
+    // that never counted those events — and hides a truncated timeline,
+    // because the merged total would then always look large enough.
+    const a = genDir(0, { 'summary.json': summary(0, 300), exit_code: '0\n', 'timeline.jsonl': bucket(300) + '\n' });
+    const b = genDir(1, { exit_code: '137\n', 'timeline.jsonl': bucket(500) + '\n' });
+    const out = join(root, 'fleet');
+    const r = run(['merge', out, a, b]);
+    expect(r.status, r.stderr).toBe(0);
+
+    const t = readFileSync(join(out, 'timeline.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(t).toHaveLength(1);
+    expect(t[0].events_sent).toBe(300); // gen-1's 500 were dropped, not summed
+
+    const f = JSON.parse(readFileSync(join(out, 'summary.json'), 'utf8'));
+    expect(f.fleet.timeline_coverage).toEqual({
+      expected: 2, present: [0], missing: [1], complete: false, configured_off: false, orphan_timelines: [1],
+    });
+    expect(f.warnings.join(' ')).toMatch(/gen-1 produced a timeline but no summary; its timeline was not merged/);
+    expect(r.stdout).toMatch(/timeline orphans/);
   });
 
   it('marks coverage configured_off when no generator emitted a timeline', () => {

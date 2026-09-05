@@ -43,8 +43,16 @@ export function renderFleetSummary(s: FleetSummary): string {
       lines.push(`timeline coverage : ${cov.expected}/${cov.expected} generators`);
     } else {
       lines.push(
-        `timeline coverage : ${cov.expected - cov.missing.length}/${cov.expected} generators ` +
+        `timeline coverage : ${cov.present.length}/${cov.expected} generators ` +
           `(missing ${cov.missing.map((g) => `gen-${g}`).join(', ')}) — fleet timeline under-counts`,
+      );
+    }
+    // A dropped timeline looks nothing like an absent one from the outside:
+    // the file is sitting right there in the generator's directory.
+    if (cov.orphan_timelines.length > 0) {
+      lines.push(
+        `timeline orphans  : ${cov.orphan_timelines.map((g) => `gen-${g}`).join(', ')} ` +
+          `(timeline but no summary — not merged)`,
       );
     }
   }

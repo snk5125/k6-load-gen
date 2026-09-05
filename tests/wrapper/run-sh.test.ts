@@ -284,7 +284,11 @@ describe('bin/run.sh START_AT scheduled start — single-generator mode', () => 
   it('START_AT an ISO-8601 timestamp ~2s ahead delays k6 start by at least ~2s', () => {
     const workdir = join(root, 'w');
     const binDir = stubK6({ code: 0, writeSummary: true });
-    const startAt = new Date(Date.now() + 2000).toISOString().replace(/\.\d+Z$/, 'Z');
+    // Anchored to a whole second and +3, for the same reason the epoch case
+    // below is: the ISO form carries no sub-second part, so `now + 2000`
+    // truncated to seconds can be as little as 1s away, and the wrapper's
+    // (correct) whole-second sleep would then look short by a second.
+    const startAt = new Date((Math.floor(Date.now() / 1000) + 3) * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
     const t0 = Date.now();
     const r = runWrapper(binDir, workdir, { START_AT: startAt });
     const elapsed = Date.now() - t0;
@@ -316,6 +320,65 @@ describe('bin/run.sh START_AT scheduled start — single-generator mode', () => 
     expect(r.status, r.stderr).toBe(0);
     expect(elapsed).toBeLessThan(1500);
     expect(r.stderr).not.toMatch(/START_AT/);
+  });
+
+  it('reads a START_AT given in epoch MILLISECONDS as milliseconds, not as the year 58000', () => {
+    // The unit mistake: Date.now() passed straight through instead of
+    // Math.floor(Date.now() / 1000). Read as seconds it is tens of thousands
+    // of years ahead, and the wrapper parks the task forever. The conversion
+    // lands this value in the PAST, which is how the assertion below tells a
+    // real conversion apart from the max-wait cap merely refusing the sleep.
+    const workdir = join(root, 'w');
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    const pastMillis = String(Date.now() - 42_000);
+    const t0 = Date.now();
+    const r = runWrapper(binDir, workdir, { START_AT: pastMillis });
+    expect(r.status, r.stderr).toBe(0);
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(r.stderr).toMatch(/run\.sh: START_AT=\d+ looks like epoch MILLISECONDS; using \d+ s/);
+    expect(r.stderr).toMatch(/run\.sh: START_AT was \d+ s ago; starting immediately \(late\)/);
+    expect(k6Argv(workdir)).not.toBe('');
+  });
+
+  it('refuses a wait beyond START_AT_MAX_WAIT_SEC and starts immediately', () => {
+    // A START_AT far in the future is a scheduling mistake, not an
+    // instruction to hold a paid-for container idle for a day.
+    const workdir = join(root, 'w');
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    const farAhead = String(Math.floor(Date.now() / 1000) + 100_000);
+    const t0 = Date.now();
+    const r = runWrapper(binDir, workdir, { START_AT: farAhead });
+    expect(r.status, r.stderr).toBe(0);
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(r.stderr).toMatch(
+      /run\.sh: START_AT is \d+ s ahead, beyond the 3600-second cap; starting immediately/,
+    );
+    expect(k6Argv(workdir)).not.toBe('');
+  });
+
+  it('takes the cap from START_AT_MAX_WAIT_SEC when the operator sets one', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    const ahead = String(Math.floor(Date.now() / 1000) + 30);
+    const t0 = Date.now();
+    const r = runWrapper(binDir, workdir, { START_AT: ahead, START_AT_MAX_WAIT_SEC: '5' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(r.stderr).toMatch(/beyond the 5-second cap; starting immediately/);
+  });
+
+  it('still waits for a START_AT that is inside the cap', () => {
+    // The cap must refuse only what is beyond it: a normal scheduled start
+    // still has to hold the generator back.
+    const workdir = join(root, 'w');
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    const startAt = String(Math.floor(Date.now() / 1000) + 3);
+    const t0 = Date.now();
+    const r = runWrapper(binDir, workdir, { START_AT: startAt, START_AT_MAX_WAIT_SEC: '60' });
+    const elapsed = Date.now() - t0;
+    expect(r.status, r.stderr).toBe(0);
+    expect(elapsed).toBeGreaterThanOrEqual(1800);
+    expect(r.stderr).not.toMatch(/cap; starting immediately/);
   });
 });
 
@@ -770,7 +833,10 @@ describe('bin/run.sh START_AT scheduled start — fleet mode', () => {
   it('waits once, before launching any generator, so they share the same start', () => {
     const workdir = join(root, 'w');
     const binDir = stubFleetK6({ 0: ok, 1: ok, 2: ok }, 3);
-    const startAt = String(Math.floor(Date.now() / 1000) + 2);
+    // +3, not +2: Math.floor here can already be up to 1s behind the actual
+    // instant, which would otherwise make the wrapper's own (correct)
+    // whole-second sleep look short by 1s.
+    const startAt = String(Math.floor(Date.now() / 1000) + 3);
     const t0 = Date.now();
     const r = runWrapper(binDir, workdir, { GEN_COUNT: '3', FLEET_CLI, START_AT: startAt });
     const elapsed = Date.now() - t0;
@@ -778,7 +844,7 @@ describe('bin/run.sh START_AT scheduled start — fleet mode', () => {
     expect(elapsed).toBeGreaterThanOrEqual(1800);
     // A single shared wait, not one per generator: it must not take anywhere
     // near 3x as long as the single-generator case.
-    expect(elapsed).toBeLessThan(5000);
+    expect(elapsed).toBeLessThan(7000);
     for (const i of [0, 1, 2]) {
       expect(existsSync(join(workdir, `gen-${i}`, 'summary.json'))).toBe(true);
     }

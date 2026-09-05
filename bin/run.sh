@@ -14,6 +14,11 @@ KEEP_RAW="${KEEP_RAW:-0}"
 TIMELINE_BUCKET_SEC="${TIMELINE_BUCKET_SEC:-15}"
 export TIMELINE_BUCKET_SEC
 START_AT="${START_AT:-}"
+# The longest wait START_AT may impose. A container held idle is being paid
+# for, and a START_AT far in the future is a scheduling mistake rather than an
+# instruction — one hour is far more than any real placement skew (fleet-launch
+# defaults --start-lead to 90 seconds).
+START_AT_MAX_WAIT_SEC="${START_AT_MAX_WAIT_SEC:-3600}"
 
 # --- Scheduled start (START_AT). --------------------------------------------
 #
@@ -44,7 +49,18 @@ to_epoch() {
       return $?
       ;;
     *)
-      # Already a Unix epoch in seconds.
+      # Already a Unix epoch — in seconds, unless somebody passed
+      # milliseconds. A value above 10^11 cannot be a plausible epoch in
+      # SECONDS (that is the year 5138) but is an entirely ordinary epoch in
+      # MILLISECONDS, which is what `Date.now()` handed straight through
+      # produces. Read as seconds it is tens of thousands of years ahead, so
+      # left alone it parks every task in the fleet forever. Convert it and
+      # say so, rather than honouring a unit mistake to the letter.
+      if [ "$ts" -gt 100000000000 ] 2>/dev/null; then
+        echo "run.sh: START_AT=$ts looks like epoch MILLISECONDS; using $((ts / 1000)) s" >&2
+        printf '%s\n' "$((ts / 1000))"
+        return 0
+      fi
       printf '%s\n' "$ts"
       return 0
       ;;
@@ -52,10 +68,11 @@ to_epoch() {
 }
 
 # Sleeps in whole seconds until START_AT. A generator that starts after
-# START_AT (clock already past it, or START_AT unparseable) logs why and
-# proceeds immediately rather than blocking or failing the run — a
-# scheduling miss must never turn into a lost run. Called once, before k6
-# (or, in fleet mode, before any generator) starts, so every generator in a
+# START_AT (clock already past it, START_AT unparseable, or the wait beyond
+# START_AT_MAX_WAIT_SEC) logs why and proceeds immediately rather than
+# blocking or failing the run — a scheduling miss must never turn into a lost
+# run, and neither must a mistyped timestamp. Called once, before k6 (or, in
+# fleet mode, before any generator) starts, so every generator in a
 # single-task fleet shares this exact wait instead of drifting apart.
 wait_for_start_at() {
   [ -n "$START_AT" ] || return 0
@@ -68,6 +85,14 @@ wait_for_start_at() {
   delta=$((epoch - now))
   if [ "$delta" -le 0 ]; then
     echo "run.sh: START_AT was $((0 - delta)) s ago; starting immediately (late)" >&2
+    return 0
+  fi
+  # An unbounded sleep here is the whole task's runtime: a START_AT weeks out
+  # (a wrong year, a wrong unit that survived to_epoch, a stale value in a task
+  # definition) would hold every generator idle until something else killed it,
+  # with the run never happening and nothing but this line to say why.
+  if [ "$delta" -gt "$START_AT_MAX_WAIT_SEC" ]; then
+    echo "run.sh: START_AT is ${delta} s ahead, beyond the ${START_AT_MAX_WAIT_SEC}-second cap; starting immediately" >&2
     return 0
   fi
   echo "run.sh: waiting ${delta}s for START_AT=$START_AT" >&2

@@ -83,13 +83,22 @@ export interface FleetGeneratorEntry {
  * missing generator makes every bucket under-count without anything in the
  * file saying so — this block is that statement.
  *
- *  - `expected` — generators that reported a summary, i.e. the ones a
- *    timeline could be expected from; a generator that crashed before
- *    handleSummary is not counted against coverage.
- *  - `present` — every generator index whose timeline was found and merged.
- *  - `missing` — reporting generators with no timeline. `complete` is
- *    `missing` being empty (with at least one generator expected).
- *  - `configured_off` — NO generator had a timeline, which is what
+ *  - `expected` — EVERY generator of the fleet (`fleet.generator_count`), not
+ *    just the ones that reported. A generator that produced neither a summary
+ *    nor a timeline is still a generator the merged timeline does not cover,
+ *    and `rate.*` is still scaled for the whole fleet: a 2-of-4 subset merge
+ *    that called itself complete let a reader take per-stage EPS at face
+ *    value while half the fleet was absent from every bucket. Not reporting
+ *    is not an excuse for coverage.
+ *  - `present` — the generator indexes whose timeline was actually MERGED.
+ *  - `missing` — every other index, i.e. the generators the merged timeline
+ *    does not account for. `complete` is `missing` being empty.
+ *  - `orphan_timelines` — generators that had a timeline but NO summary, whose
+ *    timeline was therefore dropped rather than merged (see mergeSummaries).
+ *    They are a subset of `missing`: the field says WHY those indexes are not
+ *    covered, since a dropped timeline looks nothing like an absent one when
+ *    you are staring at the generator's directory.
+ *  - `configured_off` — NO generator had a timeline at all, which is what
  *    EMIT_TIMELINE=0 or a profile's `emit_timeline: false` looks like after
  *    the fact: not a gap, an intentional absence, so it raises no warning.
  */
@@ -99,6 +108,7 @@ export interface TimelineCoverage {
   missing: number[];
   complete: boolean;
   configured_off: boolean;
+  orphan_timelines: number[];
 }
 
 export interface FleetSummary extends Omit<RunSummary, 'generator'> {
@@ -200,8 +210,9 @@ const AGGREGATION: Record<string, string> = {
     'max(started_at) - min(started_at) over reporting generators; a skew at or above the timeline bucket width ' +
     'means a bucket can hold two different stages',
   'fleet.timeline_coverage':
-    'which reporting generators had a timeline.jsonl; the merged timeline is the SUM of those, so a missing ' +
-    'generator makes every bucket under-count — read it before any per-stage conclusion',
+    'which of the fleet\'s generators — all of them, reporting or not — had a timeline.jsonl that was merged; ' +
+    'the merged timeline is the SUM of those, so a generator outside present[] makes every bucket under-count ' +
+    '— read it before any per-stage conclusion',
 };
 
 /** bin/run.sh's TIMELINE_BUCKET_SEC default. Used to judge start skew when a
@@ -387,9 +398,12 @@ function entryFor(input: GeneratorInput): FleetGeneratorEntry {
 }
 
 /**
- * @param timelines  which generator indexes had a timeline.jsonl, as the
- *   caller found them on disk (src/fleet/cli.ts's readGeneratorDir knows).
- *   Omit it and `fleet.timeline_coverage` is null — "nobody said".
+ * @param timelines  which generator indexes had a timeline.jsonl ON DISK, as
+ *   the caller found them (src/fleet/cli.ts's readGeneratorDir knows) — not
+ *   which ones it merged. The difference is the point: a timeline belonging to
+ *   a generator with no summary is reported here as an orphan and is expected
+ *   NOT to be in `timeline_events_sent`. Omit the whole argument and
+ *   `fleet.timeline_coverage` is null — "nobody said".
  * @param timeline_events_sent  Σ events_sent over the MERGED timeline, when
  *   one was produced; compared against metrics.events_sent.count to catch a
  *   truncated timeline (a warning, never an error).
@@ -406,38 +420,27 @@ export function mergeSummaries(
   bucket_sec?: number | null,
 ): FleetSummary {
   const sorted = [...inputs].sort((a, b) => a.gen_index - b.gen_index);
-  // A subset merge — `fleet-cli merge out gen-0 gen-2` by hand, or a
-  // multi-task fleet whose gen-1 never wrote anything to S3 — is an
-  // INCOMPLETE fleet, not an error. When the reporting generators declare a
-  // larger fleet than was supplied, that declared size is the fleet's, and
-  // every index nobody supplied becomes a generator with no summary, so it
-  // shows up in the breakdown, the reasons and generators_reported.
-  // Only when the reporting generators AGREE on a size: if they disagree
-  // with each other, that is a configuration fault reported below, and the
-  // supplied directory count stays the fleet size.
-  const declaredCounts = new Set(sorted.filter((i) => i.summary !== null).map((i) => i.summary!.generator.gen_count));
-  if (declaredCounts.size === 1) {
-    const declared = [...declaredCounts][0];
-    if (declared > gen_count) gen_count = declared;
-  }
-  for (let i = 0; i < gen_count; i++) {
-    if (!sorted.some((s) => s.gen_index === i)) sorted.push({ gen_index: i, exit_code: null, summary: null });
-  }
-  sorted.sort((a, b) => a.gen_index - b.gen_index);
 
   // Hard errors first, before any evidence is read: cli.ts writes nothing on a
   // throw, and a fleet whose members are not one run is not a measurement.
+  //
+  // The ORDER of those errors is itself load-bearing, because each one sends
+  // the reader somewhere different and only one of them is the real fault:
+  //   1. a duplicate index — independent of how big the fleet is;
+  //   2. nothing reported at all — the fleet's size cannot be in question
+  //      when there is no measurement to size;
+  //   3. the fleet's size, decided from what the generators DECLARE;
+  //   4. only then, a directory index outside that size.
+  // Running the bounds check against the supplied directory count instead
+  // turned a documented SOFT gen_count disagreement into a hard throw whose
+  // message blamed the merge arguments, and answered two crashed directories
+  // with "gen-3 is outside a fleet of 2" instead of "nothing reported".
   const seen = new Set<number>();
   for (const i of sorted) {
     if (seen.has(i.gen_index)) {
       throw new Error(`duplicate generator index: gen-${i.gen_index} was supplied more than once`);
     }
     seen.add(i.gen_index);
-    if (!Number.isInteger(i.gen_index) || i.gen_index < 0 || i.gen_index >= gen_count) {
-      throw new Error(
-        `gen-${i.gen_index} is outside a fleet of ${gen_count} generators (valid indexes 0..${gen_count - 1})`,
-      );
-    }
   }
 
   const reporting = sorted
@@ -448,6 +451,51 @@ export function mergeSummaries(
       `no generator produced a summary.json (exit codes: ${sorted.map((i) => `gen-${i.gen_index}=${i.exit_code ?? 'unknown'}`).join(', ')})`,
     );
   }
+
+  // The fleet's size. A subset merge — `fleet-cli merge out gen-0 gen-2` by
+  // hand, or a multi-task fleet whose gen-1 never wrote anything to S3 — is an
+  // INCOMPLETE fleet, not an error: when the generators declare a larger fleet
+  // than was supplied, that declared size is the fleet's, and every index
+  // nobody supplied becomes a generator with no summary, so it shows up in the
+  // breakdown, the reasons, generators_reported and timeline coverage.
+  //
+  // When the generators DISAGREE on the size, the largest declared count is
+  // the fleet size: it is the only value under which every supplied directory
+  // can exist, so the disagreement stays the documented soft fault it is
+  // (recorded below, with every declared value) instead of being re-reported
+  // as a bounds error against a number nobody declared.
+  const declaredCounts = [...new Set(reporting.map((r) => r.summary.generator.gen_count))];
+  const largestDeclared = Math.max(...declaredCounts);
+  if (largestDeclared > gen_count) gen_count = largestDeclared;
+  const genCountReasons: string[] = [];
+  if (declaredCounts.length > 1) {
+    genCountReasons.push(
+      `fleet members disagree on configuration: generator.gen_count differs ` +
+        `(${reporting.map((r) => `gen-${r.gen_index}=${r.summary.generator.gen_count}`).join(', ')}); ` +
+        `the fleet was merged as ${gen_count} generators`,
+    );
+  }
+
+  for (let i = 0; i < gen_count; i++) {
+    if (!seen.has(i)) {
+      sorted.push({ gen_index: i, exit_code: null, summary: null });
+      seen.add(i);
+    }
+  }
+  sorted.sort((a, b) => a.gen_index - b.gen_index);
+
+  // With the size settled, this can only fail for a directory whose index is
+  // beyond every declared fleet size — nothing claims such a generator exists,
+  // so merging it would invent a member. Still hard.
+  for (const i of sorted) {
+    if (!Number.isInteger(i.gen_index) || i.gen_index < 0 || i.gen_index >= gen_count) {
+      throw new Error(
+        `gen-${i.gen_index} is outside a fleet of ${gen_count} generators (valid indexes 0..${gen_count - 1}): ` +
+          `no generator declared a fleet that large`,
+      );
+    }
+  }
+
   for (const r of reporting) {
     if (r.summary.generator.gen_index !== r.gen_index) {
       throw new Error(
@@ -490,13 +538,20 @@ export function mergeSummaries(
   // moves every stage boundary. Compared canonically (stableStringify), so
   // key order is never a difference.
   disagreesOn('schedule', (s) => s.schedule ?? null, false);
-  const wrongCount = reporting.filter((r) => r.summary.generator.gen_count !== gen_count);
-  if (wrongCount.length > 0) {
-    configReasons.push(
-      `fleet members disagree on configuration: generator.gen_count ` +
-        `${wrongCount.map((r) => `gen-${r.gen_index}=${r.summary.generator.gen_count}`).join(', ')} ` +
-        `but ${gen_count} generator directories were merged`,
-    );
+  if (genCountReasons.length > 0) {
+    // The generators contradicted each other; the reason above already names
+    // every declared value, so do not also report each of them against the
+    // size that won.
+    configReasons.push(...genCountReasons);
+  } else {
+    const wrongCount = reporting.filter((r) => r.summary.generator.gen_count !== gen_count);
+    if (wrongCount.length > 0) {
+      configReasons.push(
+        `fleet members disagree on configuration: generator.gen_count ` +
+          `${wrongCount.map((r) => `gen-${r.gen_index}=${r.summary.generator.gen_count}`).join(', ')} ` +
+          `but ${gen_count} generator directories were merged`,
+      );
+    }
   }
 
   checkAgreement(reporting, 'run.k6_version', (s) => s.run.k6_version, warnings);
@@ -543,26 +598,58 @@ export function mergeSummaries(
   // timeline coverage: what the merged timeline.jsonl actually covers
   let timeline_coverage: TimelineCoverage | null = null;
   if (timelines) {
-    const present = sorted.filter((i) => timelines[i.gen_index] === true).map((i) => i.gen_index);
-    const missing = reporting.filter((r) => timelines[r.gen_index] !== true).map((r) => r.gen_index);
-    const expected = reporting.length;
+    const reported = new Set(reporting.map((r) => r.gen_index));
+    // `present` is what the merged timeline actually SUMS, so a generator whose
+    // timeline exists but whose summary does not is not in it: src/fleet/cli.ts
+    // drops that timeline before merging, because its events are absent from
+    // the summary totals it would then be compared against.
+    const present: number[] = [];
+    const missing: number[] = [];
+    const orphan_timelines: number[] = [];
+    for (const i of sorted) {
+      if (timelines[i.gen_index] !== true) {
+        missing.push(i.gen_index);
+      } else if (reported.has(i.gen_index)) {
+        present.push(i.gen_index);
+      } else {
+        orphan_timelines.push(i.gen_index);
+        missing.push(i.gen_index);
+      }
+    }
+    // Every generator of the fleet, not only the ones that reported: `rate.*`
+    // is scaled for the whole fleet either way, so a generator absent from
+    // every bucket under-counts the timeline whether it crashed or was simply
+    // never supplied.
+    const expected = gen_count;
+    const anyTimelineAtAll = present.length + orphan_timelines.length > 0;
     timeline_coverage = {
       expected,
       present,
       missing,
-      complete: expected > 0 && missing.length === 0,
-      configured_off: present.length === 0,
+      complete: missing.length === 0,
+      configured_off: !anyTimelineAtAll,
+      orphan_timelines,
     };
+    for (const g of orphan_timelines) {
+      warnings.push(`gen-${g} produced a timeline but no summary; its timeline was not merged`);
+    }
     if (!timeline_coverage.complete && !timeline_coverage.configured_off) {
       warnings.push(
-        `fleet timeline coverage: ${expected - missing.length} of ${expected} reporting generators shipped a timeline ` +
+        `fleet timeline coverage: ${present.length} of ${expected} generators shipped a timeline that was merged ` +
           `(missing ${missing.map((g) => `gen-${g}`).join(', ')}); the fleet timeline under-counts by whatever they sent`,
       );
     }
-    // Truncation: only comparable when every reporting generator is in the merge.
+    // Truncation. The two totals are comparable only when they describe the
+    // SAME generators: every generator that reported a summary must also be in
+    // the merged timeline. A generator that reported nothing is absent from
+    // both sides and so does not spoil the comparison — which is why this is
+    // gated on the reporting generators rather than on `complete`, and why a
+    // subset merge can still catch a timeline that was cut short.
+    const reportingWithoutTimeline = reporting.filter((r) => !present.includes(r.gen_index));
     const summaryTotal = metrics.events_sent?.count;
     if (
-      timeline_coverage.complete &&
+      reportingWithoutTimeline.length === 0 &&
+      present.length > 0 &&
       typeof timeline_events_sent === 'number' &&
       typeof summaryTotal === 'number' &&
       summaryTotal > 0 &&
@@ -571,7 +658,7 @@ export function mergeSummaries(
       warnings.push(
         `fleet timeline holds ${timeline_events_sent} of the summary's ${summaryTotal} events_sent ` +
           `(${((timeline_events_sent / summaryTotal) * 100).toFixed(1)}%, less than 90%): the timeline looks truncated, ` +
-          `so per-stage figures under-count even though coverage is complete`,
+          `so per-stage figures under-count even for the generators it does cover`,
       );
     }
   }

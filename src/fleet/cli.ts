@@ -45,16 +45,30 @@ export function readGeneratorDir(dir: string): { input: GeneratorInput; timeline
 /** Merges the generator directories into `outDir` and returns the rendered report. */
 export function mergeDirs(outDir: string, genDirs: string[]): string {
   const read = genDirs.map(readGeneratorDir);
-  const timelines = read.map((r) => r.timeline).filter((t): t is TimelineBucket[] => t !== null);
+  // A timeline from a generator that produced NO summary is not merged. k6
+  // killed after timeline-cli had already bucketed its raw.json (an OOM at
+  // 137, say) leaves exactly that: a timeline.jsonl beside no summary.json,
+  // which bin/run.sh still buckets and ships. Summing it in would inflate
+  // every fleet bucket with events the summary totals never counted — and
+  // would make the truncation check compare a timeline over N generators
+  // against summary totals over N-1, so a genuinely truncated timeline could
+  // never look short enough to fire. merge.ts records the drop as
+  // fleet.timeline_coverage.orphan_timelines, with a warning naming it.
+  const timelines = read
+    .filter((r) => r.input.summary !== null)
+    .map((r) => r.timeline)
+    .filter((t): t is TimelineBucket[] => t !== null);
   // Every merge step runs BEFORE anything touches disk: bin/run.sh ships
   // fleet/summary.json on file existence, so a summary written ahead of a
   // timeline merge that then throws would be shipped as authoritative while
   // the console said the merge failed.
   const merged = timelines.length > 0 ? mergeBuckets(timelines) : null;
-  // Which generators had a timeline, and how much of the run the merged one
-  // holds, are facts only this side knows — the summaries never mention them.
-  // Both fleet paths (bin/run.sh's single task and fleet-launch's S3 merge)
-  // arrive here, so the coverage block is filled in exactly once.
+  // Which generators had a timeline ON DISK, and how much of the run the
+  // merged one holds, are facts only this side knows — the summaries never
+  // mention them. Both fleet paths (bin/run.sh's single task and
+  // fleet-launch's S3 merge) arrive here, so the coverage block is filled in
+  // exactly once. This map reports what was FOUND, including the orphans
+  // dropped above; merge.ts is what tells the two apart.
   const present: Record<number, boolean> = {};
   for (const r of read) present[r.input.gen_index] = r.timeline !== null;
   const mergedEventsSent = merged === null ? null : merged.reduce((a, b) => a + b.events_sent, 0);

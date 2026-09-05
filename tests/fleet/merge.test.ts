@@ -308,6 +308,25 @@ describe('mergeSummaries — fleet identity (hard errors)', () => {
     // the check covers a generator that produced nothing, too
     expect(() => mergeSummaries([input(0, gen(0)), input(3, null, 107)], 2)).toThrow(/gen-3.*fleet of 2/);
   });
+
+  it('says nothing reported BEFORE complaining about the fleet bounds', () => {
+    // Two crashed directories, one of them out of range for the supplied
+    // count. The bounds message ("gen-3 is outside a fleet of 2") would send
+    // the reader after a merge argument when the actual fact is that neither
+    // generator produced anything to merge.
+    expect(() => mergeSummaries([input(0, null, 107), input(3, null, 107)], 2)).toThrow(
+      /no generator produced a summary/i,
+    );
+  });
+
+  it('sizes the fleet by the LARGEST declared count before the bounds check', () => {
+    // gen-4 is out of range for the two directories supplied, but gen-4's own
+    // summary declares a fleet of 3 — so the bounds check must be made against
+    // 3, not 2, and still reject 4 because nothing declared a fleet that large.
+    expect(() => mergeSummaries([input(0, gen(0, {}, 2)), input(4, gen(4, {}, 3))], 2)).toThrow(
+      /gen-4 is outside a fleet of 3/,
+    );
+  });
 });
 
 describe('mergeSummaries — fleet identity (soft: invalid, still merged)', () => {
@@ -319,6 +338,23 @@ describe('mergeSummaries — fleet identity (soft: invalid, still merged)', () =
     expect(reasonsOf(f)).toMatch(/fleet members disagree on configuration: generator\.gen_count/);
     expect(reasonsOf(f)).toMatch(/gen-1=3/);
     // evidence is still merged
+    expect(f.metrics.events_sent.count).toBe(2000);
+  });
+
+  it('a gen_count disagreement is SOFT: it sizes the fleet by the largest declared count and merges', () => {
+    // A documented soft fault must never surface as a hard throw. The largest
+    // declared size wins, so the index nobody supplied becomes a generator
+    // with no summary rather than an out-of-range error.
+    const f = mergeSummaries([input(0, gen(0, {}, 2)), input(1, gen(1, {}, 3))], 2);
+    expect(f.validity.valid).toBe(false);
+    expect(f.fleet.generator_count).toBe(3);
+    expect(f.fleet.generators_reported).toBe(2);
+    // every declared value is named, not just the ones that differ from the winner
+    expect(reasonsOf(f)).toMatch(
+      /fleet members disagree on configuration: generator\.gen_count differs \(gen-0=2, gen-1=3\)/,
+    );
+    expect(reasonsOf(f)).toMatch(/merged as 3 generators/);
+    expect(reasonsOf(f)).toMatch(/gen-2 produced no summary/);
     expect(f.metrics.events_sent.count).toBe(2000);
   });
 
@@ -368,10 +404,10 @@ describe('mergeSummaries — timeline coverage', () => {
     expect(mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2).fleet.timeline_coverage).toBeNull();
   });
 
-  it('is complete when every reporting generator shipped a timeline', () => {
+  it('is complete when every generator of the fleet shipped a timeline', () => {
     const f = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2, { 0: true, 1: true });
     expect(f.fleet.timeline_coverage).toEqual({
-      expected: 2, present: [0, 1], missing: [], complete: true, configured_off: false,
+      expected: 2, present: [0, 1], missing: [], complete: true, configured_off: false, orphan_timelines: [],
     });
     expect(f.warnings.join(' ')).not.toMatch(/timeline/);
   });
@@ -379,7 +415,7 @@ describe('mergeSummaries — timeline coverage', () => {
   it('names the missing generators and warns that the fleet timeline under-counts', () => {
     const f = mergeSummaries([input(0, gen(0, {}, 3)), input(1, gen(1, {}, 3)), input(2, gen(2, {}, 3))], 3, { 0: true, 1: false, 2: true });
     expect(f.fleet.timeline_coverage).toEqual({
-      expected: 3, present: [0, 2], missing: [1], complete: false, configured_off: false,
+      expected: 3, present: [0, 2], missing: [1], complete: false, configured_off: false, orphan_timelines: [],
     });
     expect(f.warnings.join(' ')).toMatch(/timeline coverage.*gen-1.*under-counts/);
   });
@@ -387,14 +423,47 @@ describe('mergeSummaries — timeline coverage', () => {
   it('is configured_off, and silent, when no generator has a timeline at all', () => {
     const f = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2, { 0: false, 1: false });
     expect(f.fleet.timeline_coverage).toEqual({
-      expected: 2, present: [], missing: [0, 1], complete: false, configured_off: true,
+      expected: 2, present: [], missing: [0, 1], complete: false, configured_off: true, orphan_timelines: [],
     });
     expect(f.warnings.join(' ')).not.toMatch(/timeline coverage/);
   });
 
-  it('expects a timeline only from generators that reported a summary', () => {
+  it('counts EVERY generator of the fleet, not only the reporting ones', () => {
+    // gen-1 crashed: no summary and no timeline. It is still a generator the
+    // merged timeline does not cover, and eps_offered is still computed for a
+    // fleet of 2 — so coverage must not call itself complete.
     const f = mergeSummaries([input(0, gen(0, {}, 2)), input(1, null, 107)], 2, { 0: true, 1: false });
-    expect(f.fleet.timeline_coverage).toMatchObject({ expected: 1, present: [0], missing: [], complete: true });
+    expect(f.fleet.timeline_coverage).toEqual({
+      expected: 2, present: [0], missing: [1], complete: false, configured_off: false, orphan_timelines: [],
+    });
+    expect(f.warnings.join(' ')).toMatch(/timeline coverage.*gen-1.*under-counts/);
+  });
+
+  it('counts the generators the fleet ADOPTED, so a subset merge is never complete coverage', () => {
+    // Two directories supplied, both declaring a fleet of four: the merge
+    // adopts 4, so the two indexes nobody supplied are missing coverage even
+    // though every supplied generator shipped a timeline. Before this, a
+    // 2-of-4 merge reported complete: true while every rate was scaled for 4.
+    const f = mergeSummaries([input(0, gen(0, {}, 4)), input(1, gen(1, {}, 4))], 2, { 0: true, 1: true });
+    expect(f.fleet.generator_count).toBe(4);
+    expect(f.fleet.timeline_coverage).toEqual({
+      expected: 4, present: [0, 1], missing: [2, 3], complete: false, configured_off: false, orphan_timelines: [],
+    });
+    expect(f.warnings.join(' ')).toMatch(/timeline coverage.*gen-2, gen-3.*under-counts/);
+  });
+
+  it('records a timeline from a generator with no summary as an orphan, not as coverage', () => {
+    // k6 OOM-killed after timeline-cli had already bucketed its raw.json:
+    // bin/run.sh leaves a timeline.jsonl beside no summary.json. Its buckets
+    // are NOT in the merged timeline (src/fleet/cli.ts drops them), because
+    // its events are not in the summary totals either.
+    const f = mergeSummaries([input(0, gen(0, {}, 2)), input(1, null, 137)], 2, { 0: true, 1: true });
+    expect(f.fleet.timeline_coverage).toEqual({
+      expected: 2, present: [0], missing: [1], complete: false, configured_off: false, orphan_timelines: [1],
+    });
+    expect(f.warnings.join(' ')).toMatch(
+      /gen-1 produced a timeline but no summary; its timeline was not merged/,
+    );
   });
 
   it('warns when a complete timeline holds less than 90% of the summary events_sent', () => {
@@ -404,12 +473,22 @@ describe('mergeSummaries — timeline coverage', () => {
     expect(f.validity.valid).toBe(true); // a warning, never an error
   });
 
-  it('does not warn at 90% or above, or when coverage is incomplete', () => {
+  it('does not warn at 90% or above, or when a REPORTING generator has no timeline', () => {
     expect(mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2, { 0: true, 1: true }, 1900).warnings.join(' '))
       .not.toMatch(/less than 90%|truncated/);
-    // incomplete coverage already carries its own warning; the totals cannot be compared
+    // gen-1 reported but shipped no timeline: the two totals now cover
+    // different generators and cannot be compared at all
     const partial = mergeSummaries([input(0, gen(0)), input(1, gen(1))], 2, { 0: true, 1: false }, 1000);
     expect(partial.warnings.join(' ')).not.toMatch(/truncated/);
+  });
+
+  it('still checks truncation when the only generators MISSING a timeline never reported', () => {
+    // gen-1 crashed with no summary and no timeline, so it is absent from both
+    // the merged timeline and the summary totals: the two sides still describe
+    // the same set of generators, and a truncated gen-0 timeline must show up.
+    const f = mergeSummaries([input(0, gen(0, {}, 2)), input(1, null, 107)], 2, { 0: true, 1: false }, 800);
+    expect(f.fleet.timeline_coverage?.complete).toBe(false);
+    expect(f.warnings.join(' ')).toMatch(/timeline holds 800 of the summary's 1000 events_sent/);
   });
 });
 

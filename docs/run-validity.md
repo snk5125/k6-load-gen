@@ -139,11 +139,18 @@ profile, and either one alone moves every stage boundary — so a `schedule` dis
 merged timeline's buckets mix stages and no per-stage figure describes a schedule any generator
 actually ran.
 
+A `generator.gen_count` disagreement is **always** this condition, never a hard throw. The merge
+sizes the fleet by the largest count any reporting generator declares — the only size under which
+every supplied directory exists — and the reason names every declared value:
+`generator.gen_count differs (gen-0=2, gen-1=3); the fleet was merged as 3 generators`. Indexes
+nobody supplied become generators with no summary (Condition 3), so a `gen_count` disagreement
+usually arrives together with one or more of those.
+
 Harder disagreements are not this condition: a differing `run_id` or `schema_version`, a summary
-whose `generator.gen_index` is not its directory index, a duplicate index, or an index outside the
-fleet make the merge **throw** instead — no fleet summary is written at all, and the merge command
-exits 1 with the reason on stderr. `run.k6_version`, `rate` and `thresholds.structural_count`
-disagreements are only warnings. See `docs/results-guide.md` §4.2.
+whose `generator.gen_index` is not its directory index, a duplicate index, or an index beyond
+*every* declared fleet size make the merge **throw** instead — no fleet summary is written at all,
+and the merge command exits 1 with the reason on stderr. `run.k6_version`, `rate` and
+`thresholds.structural_count` disagreements are only warnings. See `docs/results-guide.md` §4.2.
 
 **Recommended fix.** Find the odd generator, make the fleet uniform, rerun. Do not reason from the
 merged numbers.
@@ -159,6 +166,9 @@ merged numbers.
 3. For a `generator.gen_count` mismatch, check the launch: every generator must receive the same
    `GEN_COUNT`, and a `fleet-launch merge --count N` must use that same N. A wrong `gen_count` also
    means each generator sized its share of the rate wrongly, so `rate.*` is not the fleet's rate.
+   The reason lists every generator's declared value, so the odd one out is the one to chase; the
+   fleet was merged at the largest of them, which is also what `fleet.timeline_coverage.expected`
+   counts against.
 4. For `run.active_types`, check `TYPES` in the overrides; for `resolved_config`, check the profile
    baked into the image each task ran (a task-definition revision that changed the image mid-launch
    gives exactly this).
