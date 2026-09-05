@@ -409,7 +409,7 @@ For a set of runs, start from `index/dt=*/` rows: filter on `valid`, group by `p
                "send_duration": { "med": 18.2, "p(95)": 41.0, "p(99)": 96.5 } },
   "thresholds": { "slo": [ { "ok": true, "metric": "send_failures", "expression": "rate<0.001" },
                            { "ok": true, "metric": "send_duration", "expression": "p(99)<250" } ],
-                  "structural_count": 6 },
+                  "structural_count": 7 },
   "validity": { "dropped_iterations": 0, "valid": true, "reasons": [] },
   "warnings": [ "rate drift 4.0% at the 0.25x stage: ..." ] }
 ```

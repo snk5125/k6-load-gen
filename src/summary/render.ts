@@ -68,7 +68,7 @@ export function renderSummary(s: RunSummary): string {
 
   // Structural thresholds (see src/metrics/thresholds.ts STRUCTURAL_EXPRESSIONS)
   // never fail by construction — they exist only to force a per-type
-  // sub-metric into this summary. With three active types that is eighteen
+  // sub-metric into this summary. With three active types that is twenty-one
   // never-failing entries; showing a count instead of one line each is what
   // keeps this block from swamping the real SLO verdicts below.
   if (s.thresholds.structural_count > 0) {

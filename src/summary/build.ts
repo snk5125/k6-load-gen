@@ -137,7 +137,7 @@ export interface RunSummary {
      * structural thresholds a multi-type run generates just to force
      * sub-metrics into this summary (see STRUCTURAL_EXPRESSIONS). */
     slo: Array<{ ok: boolean; metric: string; expression: string }>;
-    /** Count only — eighteen never-failing plumbing thresholds would
+    /** Count only — twenty-one never-failing plumbing thresholds would
      * otherwise swamp this block and obscure the exit-99 gate. */
     structural_count: number;
   };

@@ -87,7 +87,7 @@ let structuralKeys: Set<string> | null = null;
 export function isStructuralThreshold(name: string): boolean {
   if (structuralKeys === null) {
     // A silent wrong answer here is the worst failure mode this function
-    // has: every consultation would read as "not structural", so all 18
+    // has: every consultation would read as "not structural", so all 21
     // structural keys would be misclassified as real SLOs and pollute the
     // run's verdict without any visible symptom. Fail loudly instead — this
     // only happens if something consults isStructuralThreshold before

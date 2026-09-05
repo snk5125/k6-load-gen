@@ -336,7 +336,7 @@ A plain `k6 ... | tee "$LOG"` pipeline would lose k6's exit code because POSIX s
 
 ### Structural Thresholds
 
-For each active type, six trivially-true thresholds are registered (e.g., `events_sent{scenario:auditd}: count>=0`). These "plumbing thresholds" do not gate pass/fail — they exist solely to force k6 to expose the tagged sub-metric in `handleSummary`'s metrics data, which is the only way to get per-type metric breakdowns in the summary. `buildSummary()` uses `isStructuralThreshold()` to exclude them from the `slo` list in `RunSummary`. They appear in k6's console output during the run; this is expected. A profile with three active types generates 18 structural thresholds plus any SLO thresholds the profile declares.
+For each active type, seven trivially-true thresholds are registered (e.g., `events_sent{scenario:auditd}: count>=0`). These "plumbing thresholds" do not gate pass/fail — they exist solely to force k6 to expose the tagged sub-metric in `handleSummary`'s metrics data, which is the only way to get per-type metric breakdowns in the summary. `buildSummary()` uses `isStructuralThreshold()` to exclude them from the `slo` list in `RunSummary`. They appear in k6's console output during the run; this is expected. A profile with three active types generates 21 structural thresholds plus any SLO thresholds the profile declares.
 
 ---
 
