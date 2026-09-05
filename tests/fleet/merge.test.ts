@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { exitCodePrecedence, fleetExitCode, isFleetSummary, mergeSummaries, type GeneratorInput } from '../../src/fleet/merge.ts';
 import type { RunSummary } from '../../src/summary/build.ts';
+
+/** Captured live from k6 v2.2.0 (see the fixture's own `_produced_by` note):
+ * a Rate metric fed add(true) x1, add(false) x9 -> {passes:1, fails:9, rate:0.1}. */
+const rateFixture: { passes: number; fails: number; rate: number } = JSON.parse(
+  readFileSync(join(__dirname, 'fixtures', 'k6-rate-metric.json'), 'utf8'),
+);
 
 /** A schema-2 single-generator summary, shaped like buildSummary's output. */
 function gen(i: number, over: Partial<RunSummary> = {}, count = 2): RunSummary {
@@ -20,7 +28,8 @@ function gen(i: number, over: Partial<RunSummary> = {}, count = 2): RunSummary {
     metrics: {
       events_attempted: { count: 1000 + i, rate: 16 },
       events_sent: { count: 1000, rate: 16 },
-      send_failures: { rate: 0, passes: 10, fails: 0 },
+      // Healthy generator: no failed sends. passes = failed sends (0), fails = successful sends (10).
+      send_failures: { rate: 0, passes: 0, fails: 10 },
       send_errors: { count: 0, rate: 0 },
       dropped_iterations: { count: 0, rate: 0 },
       send_duration: { avg: 5 + i, min: 1, med: 4 + i, max: 20 + i, 'p(90)': 8 + i, 'p(95)': 9 + i, 'p(99)': 12 + i },
@@ -71,15 +80,57 @@ describe('mergeSummaries — identity and shape', () => {
   });
 });
 
+describe('mergeSummaries — Rate metric semantics (send_failures)', () => {
+  // Ground truth captured live from k6 v2.2.0 (tests/fleet/fixtures/k6-rate-metric.json):
+  // a Rate fed add(true) x1, add(false) x9 reports {passes:1, fails:9, rate:0.1}. src/main.ts
+  // calls sendFailures.add(!res.ok), so `passes` counts FAILED sends and `fails` counts
+  // successful sends: rate = passes / (passes + fails), NOT fails / (passes + fails).
+  const withSendFailures = (i: number, sf: { rate: number; passes: number; fails: number }) =>
+    gen(i, { metrics: { ...gen(i).metrics, send_failures: sf } });
+
+  it('merges two generators matching the captured fixture to the fixture rate (0.1)', () => {
+    const a = withSendFailures(0, rateFixture);
+    const b = withSendFailures(1, rateFixture);
+    const f = mergeSummaries([input(0, a), input(1, b)], 2);
+    expect(f.metrics.send_failures.passes).toBe(2);
+    expect(f.metrics.send_failures.fails).toBe(18);
+    expect(f.metrics.send_failures.rate).toBeCloseTo(0.1, 6);
+  });
+
+  it('weights the merged rate by sample count: {1,9} + {0,10} -> 1/20 = 0.05', () => {
+    const a = withSendFailures(0, rateFixture); // {passes:1, fails:9, rate:0.1}
+    const b = withSendFailures(1, { rate: 0, passes: 0, fails: 10 });
+    const f = mergeSummaries([input(0, a), input(1, b)], 2);
+    expect(f.metrics.send_failures.passes).toBe(1);
+    expect(f.metrics.send_failures.fails).toBe(19);
+    expect(f.metrics.send_failures.rate).toBeCloseTo(0.05, 6);
+  });
+
+  it('two fully healthy generators ({0,10} each) merge to rate 0', () => {
+    const a = withSendFailures(0, { rate: 0, passes: 0, fails: 10 });
+    const b = withSendFailures(1, { rate: 0, passes: 0, fails: 10 });
+    const f = mergeSummaries([input(0, a), input(1, b)], 2);
+    expect(f.metrics.send_failures.rate).toBe(0);
+  });
+
+  it('two fully failing generators ({10,0} each) merge to rate 1', () => {
+    const a = withSendFailures(0, { rate: 1, passes: 10, fails: 0 });
+    const b = withSendFailures(1, { rate: 1, passes: 10, fails: 0 });
+    const f = mergeSummaries([input(0, a), input(1, b)], 2);
+    expect(f.metrics.send_failures.rate).toBe(1);
+  });
+});
+
 describe('mergeSummaries — counts, rates and trends', () => {
   it('sums counts, passes and fails, and recomputes the failure rate from them', () => {
-    const a = gen(0, { metrics: { ...gen(0).metrics, send_failures: { rate: 1, passes: 0, fails: 1 } } });
-    const b = gen(1, { metrics: { ...gen(1).metrics, send_failures: { rate: 0, passes: 9, fails: 0 } } });
+    // passes = failed sends, fails = successful sends (see the fixture note above).
+    const a = gen(0, { metrics: { ...gen(0).metrics, send_failures: { rate: 1, passes: 1, fails: 0 } } });
+    const b = gen(1, { metrics: { ...gen(1).metrics, send_failures: { rate: 0, passes: 0, fails: 9 } } });
     const f = mergeSummaries([input(0, a), input(1, b)], 2);
     expect(f.metrics.events_sent.count).toBe(2000);
     expect(f.metrics.events_attempted.count).toBe(2001);
-    expect(f.metrics.send_failures.passes).toBe(9);
-    expect(f.metrics.send_failures.fails).toBe(1);
+    expect(f.metrics.send_failures.passes).toBe(1);
+    expect(f.metrics.send_failures.fails).toBe(9);
     expect(f.metrics.send_failures.rate).toBeCloseTo(0.1, 6);
   });
 

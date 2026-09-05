@@ -18,7 +18,13 @@ import { maxNullable } from './nullable.ts';
  *  - `rate.*` (requested/achieved eps, drift) is already fleet-wide on every
  *    generator (src/scenarios/resolve.ts multiplies the per-generator share
  *    back up) and is TAKEN from one generator, never summed;
- *  - a Rate metric's `rate` is recomputed as Σfails / (Σpasses + Σfails);
+ *  - a Rate metric's `rate` is recomputed as Σpasses / (Σpasses + Σfails). For a
+ *    k6 Rate, `passes` counts NON-ZERO samples and `fails` counts ZERO samples
+ *    (verified live against this project's k6 v2.2.0 — see
+ *    tests/fleet/fixtures/k6-rate-metric.json). send_failures is fed
+ *    `add(!res.ok)` (src/main.ts), so `passes` there counts FAILED sends and
+ *    `fails` counts successful sends — the metric name is the opposite of
+ *    what `passes` means;
  *  - trend stats (`avg`, `med`, `p(..)`) are the WORST generator (max) — an
  *    upper bound, not a true fleet percentile, because the samples behind
  *    them are gone by the time a summary exists; `min` is min, `max` is max;
@@ -118,7 +124,8 @@ const AGGREGATION: Record<string, string> = {
   'rate': 'taken from the first reporting generator (already fleet-wide on every generator); never summed',
   'metrics.count/passes/fails': 'summed across generators',
   'metrics.rate':
-    'Rate metrics: Σfails / (Σpasses + Σfails); Counter metrics: summed per-generator rates',
+    'Rate metrics: Σpasses / (Σpasses + Σfails) — passes counts failed sends for send_failures ' +
+    "(k6's Rate.add(!res.ok)), so this is the true failure rate, not its complement; Counter metrics: summed per-generator rates",
   'send_duration':
     'min = min, max = max; avg/med/p(90)/p(95)/p(99) = max across generators (worst generator, an upper bound)',
   'types.*.send_failures': 'max across generators (per-type failure COUNTS are not reported, only the rate)',
@@ -158,7 +165,7 @@ function mergeValues(all: Values[], warnings: string[], metric: string): Values 
     const rates = pick('rate');
     if (typeof out.passes === 'number' && typeof out.fails === 'number') {
       const total = out.passes + out.fails;
-      out.rate = total === 0 ? 0 : out.fails / total;
+      out.rate = total === 0 ? 0 : out.passes / total;
     } else if (typeof out.count === 'number') {
       out.rate = rates.reduce((a, b) => a + b, 0);
     } else {

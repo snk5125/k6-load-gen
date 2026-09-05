@@ -1,0 +1,6 @@
+{
+  "_produced_by": "k6 v2.2.0, a k6 Rate metric fed Rate.add(true) once and Rate.add(false) nine times, then read from the end-of-test summary object. Verified live against this project's k6 v2.2.0: `passes` counts NON-ZERO samples (the add(true) call), `fails` counts ZERO samples (the nine add(false) calls), and `rate = passes / (passes + fails)`. src/main.ts calls `sendFailures.add(!res.ok)`, so for the send_failures metric `passes` counts FAILED sends and `fails` counts successful sends -- the metric name is the opposite of what `passes` means.",
+  "passes": 1,
+  "fails": 9,
+  "rate": 0.1
+}

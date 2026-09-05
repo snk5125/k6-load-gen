@@ -75,7 +75,7 @@ const summary = (i: number, count: number, sent: number, ok = true) =>
     resolved_config: { name: 'hec', target: { transport: 'hec' }, types: { 'json-app': { scenario: 'sweep' } } },
     generator: { gen_index: i, gen_count: count },
     rate: { requested_eps: 100, achieved_eps: 100, delta_pct: 0 },
-    metrics: { events_attempted: { count: sent }, events_sent: { count: sent }, send_failures: { rate: 0, passes: 1, fails: 0 } },
+    metrics: { events_attempted: { count: sent }, events_sent: { count: sent }, send_failures: { rate: 0, passes: 0, fails: 1 } },
     types: {},
     thresholds: { slo: [{ ok, metric: 'send_failures', expression: 'rate<0.001' }], structural_count: 0 },
     verdict_from: ['send_failures rate<0.001'],

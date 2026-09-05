@@ -19,7 +19,7 @@ const summary = (i: number, sent: number) =>
     resolved_config: { name: 'local-null' },
     generator: { gen_index: i, gen_count: 2 },
     rate: { requested_eps: 100, achieved_eps: 100, delta_pct: 0 },
-    metrics: { events_attempted: { count: sent }, events_sent: { count: sent }, send_failures: { rate: 0, passes: 1, fails: 0 } },
+    metrics: { events_attempted: { count: sent }, events_sent: { count: sent }, send_failures: { rate: 0, passes: 0, fails: 1 } },
     types: {},
     thresholds: { slo: [], structural_count: 0 },
     verdict_from: [],

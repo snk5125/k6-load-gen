@@ -12,7 +12,7 @@ function gen(i: number, over: Partial<RunSummary> = {}): RunSummary {
     rate: { requested_eps: 5000, achieved_eps: 5000, delta_pct: 0 },
     metrics: {
       events_attempted: { count: 1000 }, events_sent: { count: 1000 },
-      send_failures: { rate: 0, passes: 10, fails: 0 },
+      send_failures: { rate: 0, passes: 0, fails: 10 },
       send_duration: { avg: 5, min: 1, med: 4, max: 20, 'p(90)': 8, 'p(95)': 9, 'p(99)': 12 + i },
     },
     types: { 'json-app': { events_attempted: 1000, events_sent: 1000, send_failures: 0, send_duration: { 'p(99)': 12 + i }, wire_bytes: null, send_errors: 0 } },

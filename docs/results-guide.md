@@ -103,7 +103,7 @@ depends on the metric kind:
 | Metric | Kind | Fields | Read |
 |---|---|---|---|
 | `events_attempted`, `events_sent`, `wire_bytes`, `send_errors`, `dropped_iterations` | Counter | `count`, `rate` | `count` is the total; `rate` is per second over the run |
-| `send_failures` | Rate | `rate`, `passes`, `fails` | `rate` = share of sends that failed (0..1); a send is one batch, not one event |
+| `send_failures` | Rate | `rate`, `passes`, `fails` | `passes` = failed sends, `fails` = successful sends; `rate` = passes/(passes+fails) = share of sends that failed (0..1); a send is one batch, not one event |
 | `send_duration` | Trend | `avg`, `min`, `med`, `max`, `p(90)`, `p(95)`, `p(99)` | milliseconds per send (one batch); on a fleet, see §4 |
 
 Also present: k6's own metrics (`iterations`, `vus`, `data_sent`, `http_req_*` or
@@ -162,7 +162,7 @@ Merge rules:
 | Field | Rule |
 |---|---|
 | `metrics.*.count`, `passes`, `fails`, `types.*` counts, `validity.dropped_iterations` | summed |
-| `metrics.send_failures.rate` | recomputed as fails / (passes + fails) |
+| `metrics.send_failures.rate` | recomputed as passes / (passes + fails) — `passes` counts failed sends, `fails` counts successful sends |
 | `rate.*` | taken from one generator (already fleet-wide) |
 | `send_duration.min` / `.max` | min / max |
 | `send_duration.avg`, `med`, `p(90)`, `p(95)`, `p(99)` | **worst generator (max)**: an upper bound, not a true fleet percentile |
