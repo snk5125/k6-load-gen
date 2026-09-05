@@ -181,7 +181,7 @@ docker build -t k6-load-gen:latest .
 docker build --build-arg BASE_IMAGE=your/hardened-base .   # substitute the runtime base
 ```
 
-Or skip the build: the GitLab pipeline publishes both images to the project's Container Registry
+Or skip the build: the Images workflow publishes both images to the GitHub Container Registry
 on every merge that changes what ships (see the deployment guide).
 
 `xk6` builds a pinned k6 binary with the `k6/x/tcp` extension at image-build time — runtime

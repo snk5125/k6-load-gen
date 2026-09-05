@@ -76,35 +76,37 @@ Base: `${BASE_IMAGE}` (default `registry.access.redhat.com/ubi9/nodejs-22:latest
 
 Base: `${BASE_IMAGE}`. Installs the AWS CLI v2 from the official AWS bundle (architecture auto-detected via `uname -m`; supports `x86_64` and `aarch64`). Copies the compiled artifacts. Sets environment defaults and switches to non-root user (uid 1001).
 
-### Images from the GitLab pipeline
+### Images from the pipeline
 
-`.gitlab-ci.yml` builds both images on the project's GitLab mirror and publishes them to its
-Container Registry, so a checkout never needs a local build:
+`.github/workflows/images.yml` builds both images and publishes them to the GitHub Container
+Registry, so a checkout never needs a local build:
 
-| Image | Tag on the default branch | Tag on a git tag |
+| Image | Tag on `master` | Tag on a git tag `v*` |
 |---|---|---|
-| generator, `$CI_REGISTRY_IMAGE` | `<short-sha>` and `latest` | `<tag>` and `latest` |
-| launcher, `$CI_REGISTRY_IMAGE/launcher` | `<short-sha>` and `latest` | `<tag>` and `latest` |
+| generator, `ghcr.io/<owner>/k6-load-gen` | `<short-sha>` and `latest` | `<tag>` and `latest` |
+| launcher, `ghcr.io/<owner>/k6-load-gen/launcher` | `<short-sha>` and `latest` | `<tag>` and `latest` |
 
 Only a change that reaches an image triggers it: `Dockerfile`, `.dockerignore`, `src/`, `bin/`,
 `profiles/`, `protos/`, `package.json`, `package-lock.json`, `tsconfig.json`, the `ci/` scripts and
-the pipeline file itself. A merge touching only `docs/`, `tools/`, `tests/`, `aggregator-configs/`
-or the GitHub workflow builds nothing. Merge requests build and smoke-test without publishing
+the workflow file itself. A merge touching only `docs/`, `tools/`, `tests/`, `aggregator-configs/`
+or `ci.yml` builds nothing. Pull requests build and smoke-test without publishing
 (`ci/smoke-images.sh` runs the generator's null-transport profile end to end and exercises the
-launcher); the default branch and tags publish.
+launcher); `master` and tags publish. The workflow can also be run by hand from the Actions tab.
 
-Hardened bases are CI/CD variables, never committed: set `BASE_IMAGE` and `LAUNCHER_BASE_IMAGE`
-on the GitLab project and `ci/build-images.sh` passes them as build arguments.
+Hardened bases are repository variables, never committed: set `BASE_IMAGE` and
+`LAUNCHER_BASE_IMAGE` under Settings, Variables, Actions, and `ci/build-images.sh` passes them as
+build arguments.
 
-ECS pulling from the GitLab registry needs a deploy token with `read_registry`, stored in Secrets
-Manager as `{"username":"<token name>","password":"<token>"}`, and on the container definition:
+ECS pulling from ghcr.io needs the package to be public, or a classic personal access token with
+`read:packages` stored in Secrets Manager as `{"username":"<github user>","password":"<token>"}`
+and referenced from the container definition:
 
 ```json
 "repositoryCredentials": { "credentialsParameter": "arn:aws:secretsmanager:<region>:<account>:secret:<name>" }
 ```
 
 with `secretsmanager:GetSecretValue` on that secret granted to the task execution role. The image
-reference is then `registry.gitlab.com/<group>/<project>:<tag>` (or your instance's registry host).
+reference in the task definition is then `ghcr.io/<owner>/k6-load-gen:<tag>`.
 
 ### Runtime Image Contents
 

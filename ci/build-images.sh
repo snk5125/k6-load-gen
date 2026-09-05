@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build both images at one version. Usage: build-images.sh <version>
-# Env: GENERATOR_IMAGE, LAUNCHER_IMAGE (image names; default local names),
+# Env: GENERATOR_IMAGE, LAUNCHER_IMAGE (full image names; default local names),
 #      BASE_IMAGE, LAUNCHER_BASE_IMAGE (optional hardened bases, passed
 #      through as build args only when set).
 # Pulls each image's :latest first so a fresh daemon can reuse layers; the

@@ -1,0 +1,89 @@
+# Image pipeline. Builds the two images this repo ships — the generator
+# (Dockerfile's default target) and the operator-side launcher (`--target
+# launcher`) — and publishes them to the GitHub Container Registry:
+#
+#   ghcr.io/<owner>/k6-load-gen:<short-sha>            generator, plus :latest
+#   ghcr.io/<owner>/k6-load-gen/launcher:<short-sha>   launcher,  plus :latest
+#   ...:<tag> for a git tag
+#
+# Only changes that reach an image trigger it: see the `paths` lists, which
+# must stay identical on both triggers. A merge that touches docs/, tools/,
+# tests/, aggregator-configs/ or ci.yml alone builds nothing. Pull requests
+# build and smoke-test without publishing; master and tags publish.
+# Hardened bases come from repository variables (BASE_IMAGE,
+# LAUNCHER_BASE_IMAGE), never from the tree.
+
+name: Images
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - 'src/**'
+      - 'bin/**'
+      - 'profiles/**'
+      - 'protos/**'
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - 'ci/*.sh'
+      - .github/workflows/images.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - 'src/**'
+      - 'bin/**'
+      - 'profiles/**'
+      - 'protos/**'
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - 'ci/*.sh'
+      - .github/workflows/images.yml
+  workflow_dispatch:
+
+env:
+  BASE_IMAGE: ${{ vars.BASE_IMAGE }}
+  LAUNCHER_BASE_IMAGE: ${{ vars.LAUNCHER_BASE_IMAGE }}
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # ghcr.io requires a lowercase owner; the version is the short SHA, or
+      # the tag name for a tag push.
+      - name: Resolve image names and version
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "GENERATOR_IMAGE=ghcr.io/$owner/k6-load-gen" >> "$GITHUB_ENV"
+          echo "LAUNCHER_IMAGE=ghcr.io/$owner/k6-load-gen/launcher" >> "$GITHUB_ENV"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "VERSION=${{ github.ref_name }}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          fi
+
+      # Logged in before the build so the cache pull of :latest can read a
+      # private package; the token is scoped to this repository's packages.
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build both images
+        run: ./ci/build-images.sh "$VERSION"
+
+      - name: Smoke-run both images
+        run: ./ci/smoke-images.sh "$VERSION"
+
+      - name: Publish
+        if: github.event_name != 'pull_request'
+        run: PUSH_LATEST=1 ./ci/push-images.sh "$VERSION"
