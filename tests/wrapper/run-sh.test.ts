@@ -255,6 +255,70 @@ describe('bin/run.sh exit-code propagation', () => {
   });
 });
 
+describe('bin/run.sh START_AT scheduled start — single-generator mode', () => {
+  // START_AT accepts either an ISO-8601 UTC timestamp or a Unix epoch in
+  // seconds; both forms are exercised below. bin/run.sh must parse the ISO
+  // form without GNU date (this suite runs on macOS; the container is
+  // Linux) — see the to_epoch fallback to `date -u -j -f`.
+
+  it('START_AT as a past Unix epoch logs lateness and still runs k6', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    const pastEpoch = Math.floor(Date.now() / 1000) - 42;
+    const r = runWrapper(binDir, workdir, { START_AT: String(pastEpoch) });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/run\.sh: START_AT was \d+ s ago; starting immediately \(late\)/);
+    expect(k6Argv(workdir)).not.toBe('');
+  });
+
+  it('START_AT as a past ISO-8601 timestamp logs lateness and still runs k6', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    const pastIso = new Date(Date.now() - 5000).toISOString().replace(/\.\d+Z$/, 'Z');
+    const r = runWrapper(binDir, workdir, { START_AT: pastIso });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/run\.sh: START_AT was \d+ s ago; starting immediately \(late\)/);
+    expect(k6Argv(workdir)).not.toBe('');
+  });
+
+  it('START_AT an ISO-8601 timestamp ~2s ahead delays k6 start by at least ~2s', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    const startAt = new Date(Date.now() + 2000).toISOString().replace(/\.\d+Z$/, 'Z');
+    const t0 = Date.now();
+    const r = runWrapper(binDir, workdir, { START_AT: startAt });
+    const elapsed = Date.now() - t0;
+    expect(r.status, r.stderr).toBe(0);
+    expect(elapsed).toBeGreaterThanOrEqual(1800);
+    expect(k6Argv(workdir)).not.toBe('');
+  });
+
+  it('START_AT a Unix epoch ~2s ahead delays k6 start by at least ~2s', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    // +3, not +2: START_AT is a whole-second epoch, and Math.floor here can
+    // already be up to 1s behind the actual instant, which would otherwise
+    // make the wrapper's own (correct) whole-second sleep look short by 1s.
+    const startAt = String(Math.floor(Date.now() / 1000) + 3);
+    const t0 = Date.now();
+    const r = runWrapper(binDir, workdir, { START_AT: startAt });
+    const elapsed = Date.now() - t0;
+    expect(r.status, r.stderr).toBe(0);
+    expect(elapsed).toBeGreaterThanOrEqual(1800);
+  });
+
+  it('no START_AT means no wait and no lateness log', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubK6({ code: 0, writeSummary: true });
+    const t0 = Date.now();
+    const r = runWrapper(binDir, workdir, { START_AT: UNSET });
+    const elapsed = Date.now() - t0;
+    expect(r.status, r.stderr).toBe(0);
+    expect(elapsed).toBeLessThan(1500);
+    expect(r.stderr).not.toMatch(/START_AT/);
+  });
+});
+
 describe('bin/run.sh EMIT_TIMELINE resolution (environment, else profile, else 1)', () => {
   // Spec §9.1 makes `emit_timeline` a PROFILE flag. It was validated by
   // src/config/schema.ts and set by both shipped profiles, and nothing read
@@ -699,6 +763,37 @@ describe('bin/run.sh single-task fleet mode — detection', () => {
     const r = runWrapper(binDir, workdir, { GEN_COUNT: '64', FLEET_CLI });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stderr).toMatch(/64 generators .*CPU/);
+  });
+});
+
+describe('bin/run.sh START_AT scheduled start — fleet mode', () => {
+  it('waits once, before launching any generator, so they share the same start', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubFleetK6({ 0: ok, 1: ok, 2: ok }, 3);
+    const startAt = String(Math.floor(Date.now() / 1000) + 2);
+    const t0 = Date.now();
+    const r = runWrapper(binDir, workdir, { GEN_COUNT: '3', FLEET_CLI, START_AT: startAt });
+    const elapsed = Date.now() - t0;
+    expect(r.status, r.stderr).toBe(0);
+    expect(elapsed).toBeGreaterThanOrEqual(1800);
+    // A single shared wait, not one per generator: it must not take anywhere
+    // near 3x as long as the single-generator case.
+    expect(elapsed).toBeLessThan(5000);
+    for (const i of [0, 1, 2]) {
+      expect(existsSync(join(workdir, `gen-${i}`, 'summary.json'))).toBe(true);
+    }
+  });
+
+  it('START_AT in the past logs lateness once and still runs every generator', () => {
+    const workdir = join(root, 'w');
+    const binDir = stubFleetK6({ 0: ok, 1: ok }, 2);
+    const pastEpoch = Math.floor(Date.now() / 1000) - 10;
+    const r = runWrapper(binDir, workdir, { GEN_COUNT: '2', FLEET_CLI, START_AT: String(pastEpoch) });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/run\.sh: START_AT was \d+ s ago; starting immediately \(late\)/);
+    for (const i of [0, 1]) {
+      expect(existsSync(join(workdir, `gen-${i}`, 'summary.json'))).toBe(true);
+    }
   });
 });
 

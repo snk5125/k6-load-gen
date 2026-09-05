@@ -697,6 +697,19 @@ the summaries it reads agree. A hardened pipeline substitutes the launcher's bas
   roles, `ecs:DescribeTasks`, and `s3:ListBucket` / `s3:GetObject` / `s3:PutObject` on the run
   prefix. The task role itself stays `s3:PutObject` only.
 
+**Scheduled start across tasks (`START_AT`).** ECS places each `RunTask` call on its own schedule,
+so N independently-launched tasks do not start generating load at the same instant without help.
+`fleet-launch run` injects `START_AT` — an ISO-8601 UTC timestamp — set to *now + `--start-lead`
+seconds* (default 90 s) into every task's overrides, identically; each task's own `bin/run.sh`
+sleeps until that instant before starting k6 (in a single-task fleet, once, before any of its N
+generators start, so they share the wait rather than drifting apart). If the overrides file already
+sets `START_AT`, the launcher leaves it alone and injects nothing further; `--no-start-lead` turns
+the whole feature off (no `START_AT` is injected unless the file supplies one). `START_AT` also
+accepts a bare Unix epoch in seconds, for callers that construct it themselves. A generator that
+starts after its `START_AT` (a slow placement, or a value already in the past) logs the lateness to
+stderr and proceeds immediately rather than waiting or failing; `fleet.start_skew_sec` in the merged
+summary is what reports how late a generator actually was.
+
 To merge a fleet launched any other way, or to redo a merge:
 
 ```bash
